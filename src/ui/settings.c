@@ -950,6 +950,7 @@ void set_default_config(AppSettings *settings)
         c_strcpy(settings->hideSideCover, "0", sizeof(settings->hideSideCover));
         c_strcpy(settings->collapseTopLevel, "0", sizeof(settings->collapseTopLevel));
         c_strcpy(settings->hideTimeStatus, "0", sizeof(settings->hideTimeStatus));
+        c_strcpy(settings->hideMetadata, "0", sizeof(settings->hideMetadata));
         c_strcpy(settings->simpleTimeStatus, "1", sizeof(settings->simpleTimeStatus));
         c_strcpy(settings->visualizer_height, "6",
                  sizeof(settings->visualizer_height));
@@ -1234,6 +1235,10 @@ void construct_app_settings(AppSettings *settings, KeyValuePair *pairs, int coun
                 } else if (strcmp(lowercase_key, "hidetimestatus") == 0) {
                         snprintf(settings->hideTimeStatus,
                                  sizeof(settings->hideTimeStatus), "%s",
+                                 pair->value);
+                } else if (strcmp(lowercase_key, "hidemetadata") == 0) {
+                        snprintf(settings->hideMetadata,
+                                 sizeof(settings->hideMetadata), "%s",
                                  pair->value);
                 } else if (strcmp(lowercase_key, "simpletimestatus") == 0) {
                         snprintf(settings->simpleTimeStatus,
@@ -2176,6 +2181,12 @@ void set_config(AppSettings *settings, UISettings *ui)
                                sizeof(settings->hideTimeStatus))
                     : c_strcpy(settings->hideTimeStatus, "0",
                                sizeof(settings->hideTimeStatus));
+        if (settings->hideMetadata[0] == '\0')
+                ui->hideMetadata
+                    ? c_strcpy(settings->hideMetadata, "1",
+                               sizeof(settings->hideMetadata))
+                    : c_strcpy(settings->hideMetadata, "0",
+                               sizeof(settings->hideMetadata));
         if (settings->simpleTimeStatus[0] == '\0')
                 ui->simpleTimeStatus
                     ? c_strcpy(settings->simpleTimeStatus, "1",
@@ -2307,6 +2318,9 @@ void set_config(AppSettings *settings, UISettings *ui)
         fprintf(file, "hideLogo=%s\n", settings->hideLogo);
         fprintf(file, "hideHelp=%s\n", settings->hideHelp);
         fprintf(file, "hideTimeStatus=%s\n\n", settings->hideTimeStatus);
+
+        fprintf(file, "# Hide artist, album and year rows in the track view.\n");
+        fprintf(file, "hideMetadata=%s\n\n", settings->hideMetadata);
 
         fprintf(file, "# Toggles showing kHz and bitrate.\n");
         fprintf(file, "simpleTimeStatus=%s\n\n", settings->simpleTimeStatus);

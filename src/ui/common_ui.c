@@ -133,6 +133,7 @@ void transfer_settings_to_ui(void)
         ui->hideHelp = (settings->hideHelp[0] == '1');
         ui->visualizer_mode = get_number(settings->visualizer_mode);
         ui->hideTimeStatus = (settings->hideTimeStatus[0] == '1');
+        ui->hideMetadata = (settings->hideMetadata[0] == '1');
         ui->simpleTimeStatus = (settings->simpleTimeStatus[0] == '1');
         ui->discordRPCEnabled = (settings->discordRPCEnabled[0] == '1');
         ui->quitAfterStopping = (settings->quitAfterStopping[0] == '1');

@@ -373,6 +373,7 @@ typedef struct
         bool hideHelp;           /**< Hide help text at the top. */
         bool hideFooter;         /**< Hide footer section. */
         bool hideTimeStatus;     /**< Hide elapsed, song length, vol, bitrate. */
+        bool hideMetadata;       /**< Hide artist, album and year rows in track view. */
         bool simpleTimeStatus;     /**< Shows only elapsed seconds and total seconds. */
         bool hideSideCover;      /**< Hide side cover panel. */
         bool collapseTopLevel;      /**< Hide contents of top level folders. */
@@ -675,6 +676,7 @@ typedef struct
         char hideSideCover[2];
         char collapseTopLevel[2];
         char hideTimeStatus[2];
+        char hideMetadata[2];
         char simpleTimeStatus[2];
         char quitAfterStopping[2];
         char clearListClearsAll[2];

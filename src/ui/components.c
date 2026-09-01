@@ -28,6 +28,7 @@
 #include "visuals.h"
 
 #include "utils/file.h"
+#include "utils/term.h"
 #include "utils/utils.h"
 
 #include <libgen.h>
@@ -1900,6 +1901,58 @@ ComponentMsg component_search_header(const Model *model, k_Rect region, DrawBuff
         return (ComponentMsg){0};
 }
 
+#define KEW_TITLE_MAX_WRAP_ROWS 8
+
+// Greedy word-wrap by display width. Overflow past max_rows is dropped;
+// the caller truncates the last drawn row to fit.
+static int kew_wrap_title_lines(const char *title, int max_width, int max_rows,
+                                char lines[][METADATA_MAX_LENGTH + 2])
+{
+        char remaining[METADATA_MAX_LENGTH + 2];
+        snprintf(remaining, sizeof(remaining), "%s", title);
+
+        for (char *c = remaining; *c; c++) {
+                if (*c == '\n' || *c == '\r' || *c == '\t')
+                        *c = ' ';
+        }
+
+        int count = 0;
+
+        while (remaining[0] != '\0' && count < max_rows) {
+
+                char fit[METADATA_MAX_LENGTH + 2];
+                str_truncate_display_width(remaining, fit, max_width);
+
+                if (fit[0] == '\0')
+                        break;
+
+                // More text left: back up to the last space for a word break
+                // (only if the break would not leave the line empty).
+                long used = (long)strlen(fit);
+                if ((long)strlen(remaining) > used) {
+                        char *sp = strrchr(fit, ' ');
+                        if (sp && sp != fit) {
+                                used = (long)(sp - fit);
+                                *sp = '\0';
+                        }
+                }
+
+                snprintf(lines[count], METADATA_MAX_LENGTH + 2, "%s", fit);
+                count++;
+
+                const char *next = remaining + used;
+                while (*next == ' ')
+                        next++;
+
+                if (*next == '\0')
+                        break;
+
+                memmove(remaining, next, strlen(next) + 1);
+        }
+
+        return count > 0 ? count : 1;
+}
+
 ComponentMsg component_metadata(const Model *model, k_Rect region, DrawBuffer *buf, DirtyFlags dirty)
 {
         (void)dirty;
@@ -1923,7 +1976,7 @@ ComponentMsg component_metadata(const Model *model, k_Rect region, DrawBuffer *b
         char *dir = dirname(path_copy); // Dirname can modify the string, so use a copy
         bool is_root_dir = paths_equal(dir, expanded_path);
 
-        if (dirty & DIRTY_SONG) {
+        if (!ui->hideMetadata && (dirty & DIRTY_SONG)) {
 
                 // Artist
                 if (region.height >= 2) {
@@ -2010,19 +2063,76 @@ ComponentMsg component_metadata(const Model *model, k_Rect region, DrawBuffer *b
                 char pretty_title[KEW_PATH_MAX + 1];
                 pretty_title[0] = '\0';
 
-                process_name(metadata->title, pretty_title, max_width, false, false);
+                // With hideMetadata the title may use all metadata rows and
+                // wraps; otherwise it stays on a single truncated row.
+                int wrap_rows = ui->hideMetadata ? region.height : 1;
+                if (wrap_rows > KEW_TITLE_MAX_WRAP_ROWS)
+                        wrap_rows = KEW_TITLE_MAX_WRAP_ROWS;
+
+                process_name(metadata->title, pretty_title,
+                             max_width * wrap_rows + wrap_rows, false, false);
+
+                char lines[KEW_TITLE_MAX_WRAP_ROWS][METADATA_MAX_LENGTH + 2];
+                int line_count = kew_wrap_title_lines(pretty_title, max_width,
+                                                      wrap_rows, lines);
+
+                int line_glyphs[KEW_TITLE_MAX_WRAP_ROWS] = {0};
+                int total_glyphs = 0;
+                for (int i = 0; i < line_count; i++) {
+                        line_glyphs[i] = (int)g_utf8_strlen(lines[i], -1);
+                        total_glyphs += line_glyphs[i];
+                }
 
                 int frame = model->title_delay.frame;
-                int width = MIN(frame, max_width);
+                bool reveal = model->title_delay.active;
+                int revealed = reveal ? MIN(frame, total_glyphs) : total_glyphs;
 
-                // Title delay animation
-                if (model->title_delay.active && frame <= width) {
-                        char display[KEW_PATH_MAX + 4];
-                        char current_text[KEW_PATH_MAX + 1];
-                        const char *p = pretty_title;
+                for (int i = 0; i < wrap_rows; i++) {
+
+                        int row = region.row + i;
+
+                        if (i >= line_count) {
+                                // Blank out rows a longer title used before
+                                // (song changes, terminal resizes).
+                                draw_buffer_set_string_truncated(buf, row, region.col, "",
+                                                                 max_width, style);
+                                continue;
+                        }
+
+                        int before = 0;
+                        for (int j = 0; j < i; j++)
+                                before += line_glyphs[j];
+
+                        int shown = line_glyphs[i];
+                        bool mid = false;
+
+                        if (reveal) {
+                                int avail = revealed - before;
+
+                                if (avail <= 0) {
+                                        shown = 0;
+                                        mid = (avail == 0 && shown < line_glyphs[i]);
+                                } else if (avail < shown) {
+                                        shown = avail;
+                                        mid = true;
+                                } else {
+                                        shown = line_glyphs[i];
+                                        mid = false;
+                                }
+                        }
+
+                        if (shown <= 0 && !mid) {
+                                // Not revealed yet: clear stale text on this row.
+                                draw_buffer_set_string_truncated(buf, row, region.col, "",
+                                                                 max_width, style);
+                                continue;
+                        }
+
+                        char current_text[METADATA_MAX_LENGTH + 2];
+                        const char *p = lines[i];
                         int byte_pos = 0;
 
-                        for (int i = 0; i < width && *p; i++) {
+                        for (int k = 0; k < shown && *p; k++) {
                                 int bytes = 0;
                                 utf8_next(p, &bytes);
 
@@ -2030,15 +2140,16 @@ ComponentMsg component_metadata(const Model *model, k_Rect region, DrawBuffer *b
                                 byte_pos += bytes;
                         }
 
-                        memcpy(current_text, pretty_title, byte_pos);
+                        memcpy(current_text, lines[i], byte_pos);
 
                         current_text[byte_pos] = '\0';
 
-                        snprintf(display, sizeof(display), "%s█", current_text);
+                        if (mid)
+                                snprintf(current_text + byte_pos,
+                                         sizeof(current_text) - byte_pos, "%s", "█");
 
-                        draw_buffer_set_string_truncated(buf, region.row, region.col, display, max_width, style);
-                } else {
-                        draw_buffer_set_string_truncated(buf, region.row, region.col, pretty_title, max_width, style);
+                        draw_buffer_set_string_truncated(buf, row, region.col,
+                                                         current_text, max_width, style);
                 }
         }
 
