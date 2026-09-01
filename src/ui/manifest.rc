@@ -3,7 +3,7 @@
 #include "version.h"
 
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "ms-utf8.xml"
-IDI_ICON1 ICON "kew.ico"
+IDI_ICON1 ICON "../../kew.ico"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION VER_FILEVERSION
@@ -22,13 +22,13 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName",      COMPANY_NAME
-            VALUE "FileDescription",  FILE_DESCRIPTION
-            VALUE "FileVersion",      FILE_VERSION
-            VALUE "InternalName",     INTERNAL_NAME
-            VALUE "OriginalFilename", ORIGINAL_FILENAME
-            VALUE "ProductName",      PRODUCT_NAME
-            VALUE "ProductVersion",   PRODUCT_VERSION
+            VALUE "CompanyName", "kew"
+            VALUE "FileDescription", "kew"
+            VALUE "FileVersion", FILE_VERSION
+            VALUE "InternalName", "kew"
+            VALUE "OriginalFilename", "kew.exe"
+            VALUE "ProductName", "kew"
+            VALUE "ProductVersion", PRODUCT_VERSION
         END
     END
 
