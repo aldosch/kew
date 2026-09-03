@@ -1,0 +1,61 @@
+# Aldo Dracula - kew port of the aldo-dracula palette
+# (matches ~/.config/opencode/themes/aldo-dracula.json and nvim/lua/aldo-dracula.lua)
+
+[theme]
+name=Aldo Dracula
+author=aldosch
+
+# Core colors
+accent=#bd93f9
+text=#f8f8f2
+textDim=#6272a4
+textMuted=#44475a
+
+# General Colors
+logo=#bd93f9
+header=#8be9fd
+footer=#44475a
+help=#6272a4
+link=#8be9fd
+nowplaying=#ff79c6
+playbackstatus=#6272a4
+
+# Playlist View
+playlist.rownum=#6272a4
+playlist.title=#f8f8f2
+playlist.playing=#50fa7b
+
+# Track View
+trackview.title=#f8f8f2
+trackview.artist=#8be9fd
+trackview.album=#ff79c6
+trackview.year=#6272a4
+trackview.time=#f8f8f2
+trackview.visualizer=#bd93f9
+trackview.lyrics=#f8f8f2
+
+# Library View
+library.artist=#8be9fd
+library.album=#bd93f9
+library.track=#f8f8f2
+library.enqueued=#8be9fd
+library.playing=#50fa7b
+
+# Search
+search.label=#ff79c6
+search.query=#f8f8f2
+search.result=#f8f8f2
+search.enqueued=#8be9fd
+search.playing=#50fa7b
+
+# Progress
+progress.filled=#bd93f9
+progress.elapsed=#ff79c6
+progress.empty=#44475a
+progress.duration=#6272a4
+
+# Status
+status.info=-1      	# Default foreground
+status.warning=#f1fa8c
+status.error=#ff5555
+status.success=#50fa7b
