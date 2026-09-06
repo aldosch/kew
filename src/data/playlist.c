@@ -23,8 +23,8 @@
 #include "loader/tagLibWrapper.h"
 
 #include "utils/file.h"
-#include "utils/utils.h"
 #include "utils/k_log.h"
+#include "utils/utils.h"
 
 #include <dirent.h>
 #include <glib.h>
@@ -190,6 +190,12 @@ Node *delete_from_list(PlayList *list, Node *node)
 
         // Free song file path string if allocated
         if (node->song.file_path != NULL) {
+
+                k_log("delete node=%p file_path=%p path=%s\n",
+                        (void *)node,
+                        (void *)node->song.file_path,
+                        node->song.file_path ? node->song.file_path : "(null)");
+
                 free(node->song.file_path);
                 node->song.file_path = NULL;
         }
@@ -241,9 +247,22 @@ void shuffle_playlist(PlayList *playlist)
 
         Node *current = playlist->head;
         int i = 0;
-        while (current != NULL) {
+
+        while (current != NULL && i < playlist->count) {
                 nodes[i++] = current;
                 current = current->next;
+        }
+
+        if (i != playlist->count || current != NULL) {
+                k_log("Playlist corruption: count=%d, traversed=%d, current=%p\n", playlist->count, i, (void *)current);
+                playlist->count = i;
+        }
+
+        if (playlist->count < 1) {
+                playlist->head = NULL;
+                playlist->tail = NULL;
+                free(nodes);
+                return;
         }
 
         // Shuffle the array using Fisher-Yates algorithm
@@ -256,11 +275,13 @@ void shuffle_playlist(PlayList *playlist)
 
         playlist->head = nodes[0];
         playlist->tail = nodes[playlist->count - 1];
+
         for (int j = 0; j < playlist->count; ++j) {
                 nodes[j]->next =
                     (j < playlist->count - 1) ? nodes[j + 1] : NULL;
                 nodes[j]->prev = (j > 0) ? nodes[j - 1] : NULL;
         }
+
         free(nodes);
 }
 
