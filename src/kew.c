@@ -35,7 +35,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 #endif
 
 #ifndef KEW_VERSION
-#define KEW_VERSION "4.3.2"
+#define KEW_VERSION "4.3.4"
 #endif
 
 #include "common/appstate.h"
@@ -826,6 +826,10 @@ void state_init(void)
         state->ui.library_scrollbar.last_position = 0;
         state->ui.search_scrollbar.position = 0;
         state->ui.search_scrollbar.last_position = 0;
+        state->ui.help_scrollbar.position = 0;
+        state->ui.help_scrollbar.last_position = 0;
+        state->ui.current_library_sort = SORT_BY_NAME;
+
         ps->lastPlayedId = -1;
         ps->nextSongNeedsRebuilding = false;
         ps->songHasErrors = false;

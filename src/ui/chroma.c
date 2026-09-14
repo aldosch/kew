@@ -120,10 +120,10 @@ static void *chroma_thread(void *arg)
                 if(settings->chromaPath[0] == '\0'){
                         if(settings->chromaDevice[0] == '\0')
                                 n = snprintf(cmd, sizeof(cmd),
-                                        "chroma --stream %dx%d --preset %d --bass-influence 1.0", g_viz.width, g_viz.height, g_viz.preset);
+                                        "chroma --stream %dx%d --preset %d", g_viz.width, g_viz.height, g_viz.preset);
                         else
                                 n = snprintf(cmd, sizeof(cmd),
-                                        "chroma --stream %dx%d --preset %d --bass-influence 1.0  --audio-device \"%s\"", g_viz.width, g_viz.height, g_viz.preset, settings->chromaDevice);
+                                        "chroma --stream %dx%d --preset %d --audio-device \"%s\"", g_viz.width, g_viz.height, g_viz.preset, settings->chromaDevice);
                 } else{
                         if(settings->chromaDevice[0] == '\0')
                                 n = snprintf(cmd, sizeof(cmd),
@@ -132,7 +132,6 @@ static void *chroma_thread(void *arg)
                                n = snprintf(cmd, sizeof(cmd),
                                         "chroma --stream %dx%d -c \"%s\" --audio-device \"%s\"", g_viz.width, g_viz.height, settings->chromaPath, settings->chromaDevice);
                 }
-
 
                 //"chroma --stream %dx%d --fps 30", g_viz.width, g_viz.height);
 
@@ -330,6 +329,26 @@ void chroma_print_frame(int row, int col, int height, bool centered)
         }
 }
 
+#ifdef _WIN32
+
+#include <windows.h>
+
+bool chroma_is_installed(void)
+{
+        char path[MAX_PATH];
+
+        return SearchPathA(
+                NULL,
+                "chroma.exe",
+                NULL,
+                sizeof(path),
+                path,
+                NULL
+        ) != 0;
+}
+
+#else
+
 bool chroma_is_installed(void)
 {
         const char *path = getenv("PATH");
@@ -344,17 +363,22 @@ bool chroma_is_installed(void)
         char fullpath[512];
 
         while (dir) {
-                snprintf(fullpath, sizeof(fullpath), "%s/chroma", dir);
+                snprintf(fullpath, sizeof(fullpath),
+                         "%s/chroma", dir);
+
                 if (access(fullpath, X_OK) == 0) {
                         free(p);
                         return true;
                 }
+
                 dir = strtok(NULL, ":");
         }
 
         free(p);
         return false;
 }
+
+#endif
 
 bool chroma_is_started(void)
 {

@@ -22,6 +22,7 @@
 #include "ui/common_ui.h"
 #include "ui/components.h"
 #include "ui/control_ui.h"
+#include "ui/chroma.h"
 #include "ui/termbox2_input.h"
 #include "ui/visuals.h"
 
@@ -381,6 +382,21 @@ void set_scrollbar_positions()
                                 set_dirty(DIRTY_SEARCH);
                 }
         }
+
+        if (model->state.currentView == HELP_VIEW) {
+                if (model->state.ui.chosen_help_row >= 0) {
+                        double position =
+                            (double)model->state.ui.chosen_help_row /
+                            (double)model->state.ui.help_region.height;
+
+                        new_pos = (int)model->state.ui.help_region.row + (int)round(position * model->state.ui.help_region.height);
+
+                        model->state.ui.help_scrollbar.position = new_pos;
+
+                        if (new_pos != model->state.ui.help_scrollbar.position)
+                                set_dirty(DIRTY_ALL);
+                }
+        }
 }
 
 UpdateResult update(Model *model, struct Msg *msg)
@@ -474,7 +490,7 @@ UpdateResult update(Model *model, struct Msg *msg)
                 if (model->state.currentView != PLAYLIST_VIEW)
                         model->state.ui.resetPlaylistDisplay = true;
 
-                if (model->state.ui.chroma_start_requested && !model->state.ui.chroma_started &&
+                if (model->state.ui.chroma_start_requested && !model->state.ui.chroma_started && chroma_is_installed() &&
                     model->state.currentView == TRACK_VIEW)
                         set_dirty(DIRTY_ALL);
 
@@ -897,11 +913,12 @@ UpdateResult update(Model *model, struct Msg *msg)
 
                 break;
 
-        case MSG_PROGRESS_ROW_SET:
+        case MSG_PROGRESS_BAR_SET:
                 model->state.ui.num_progress_bars = msg->region.width / 2;
                 model->progressBar.col = msg->region.col + 1;
                 model->progressBar.row = msg->region.row + 1;
                 model->progressBar.length = msg->region.width;
+                
                 if (msg->footer_row != DISABLED_ROW) {
                         model->state.ui.footer_row = msg->footer_row + 1;
                         model->state.ui.footer_col = msg->region.col + 1;
@@ -922,6 +939,8 @@ UpdateResult update(Model *model, struct Msg *msg)
                         model->miniControls.row = msg->minicontrols_row;
                         model->miniControls.col = msg->minicontrols_col;
                         model->miniControls.width = msg->minicontrols_width;
+                        msg->type = MSG_PROGRESS_BAR_SET;
+                        dispatch_msg(*msg);
                 }
 
                 break;

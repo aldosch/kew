@@ -1,6 +1,59 @@
 # CHANGELOG
 
-## kew 4.3.1
+## kew 4.3.4
+
+#### Bug fixes:
+
+- Fix clicking links affecting rendering. By @ravachol.
+
+## kew 4.3.3
+
+#### Enhancements:
+
+- Add Scrollable text on help view. By @ravachol. Suggested by @hashfoeW.
+
+- Add progress bar below mini-controls. By @ravachol.
+
+- Moved the website source out of kew repository, it will now be on https://codeberg.org/ravachol/kew-website.git. This makes the zip and git clone as lightweight as before the website. By @ravachol.
+
+- Volume now can go to 12, or 120%. So when you're at 11, and you need a little bit more... By @ravachol. Suggested by @GTAGCT.
+
+- Added kew to winget (windows package manager).
+
+- Added ability to read lyrics from TXXX (description: USLT) tags, which is how ffmpeg defaults to encode lyrics.
+
+- Auto-resume is now off by default in a fresh install. Sorry, auto-resumers, but it can be very annoying. We want to avoid annoying things. It can be changed in kewrc to `autoResume=1`.
+
+#### Bug fixes:
+
+- Fix: vulnerability in kew. Maintainers of downstream packages can contact kew-player@proton.me for coordinated disclosure and additional technical information. By @ravachol. Reported by @eilvelia (https://github.com/eilvelia).
+
+- Fix Updating library sets sort to date bug. By @ravachol. Reported by @Narwha1.
+
+- Fixes so albums that are at the top-level aren't shuffled (only if they have sub-folders with songs, ie it's an artist or genre folder, not an album folder). By @ravachol. Reported by @Narwha1.
+
+- Fixes several issues with chroma and enables it on windows. However due to changes to chroma, it doesn't have audio reactivity unless you install the develop branch of chroma:
+
+```
+git clone https://github.com/yuri-xyz/chroma.git
+
+cd chroma
+
+git checkout branch develop
+
+cargo install --path .
+```
+
+By @ravachol.
+
+- Fixes issue with karaoke lyrics. By @Moksh-Parikh.
+
+- Fix music auto-plays when merely expanding a directory where the songs are enqueued. By @ravachol.
+
+- When enqueueing in shuffle mode and I enqueue an album, the first song should also be shuffled. By @ravachol. Suggested by @Oyouu.
+
+
+## kew 4.3.2
 
 #### Enhancements:
 

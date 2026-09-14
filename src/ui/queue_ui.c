@@ -123,6 +123,30 @@ int get_relative_depth(const char *base, const char *path)
     return depth;
 }
 
+bool should_shuffle_enqueued_songs(FileSystemEntry *first_enqueued_entry, FileSystemEntry *entry)
+{
+        Model *model = get_model();
+
+        // for a layout of type: root-> artist(s) -> album(s) -> song(s).
+        // artist level is shuffled, IF
+        // 1) it contains albums
+        // 2) first_enqueued_entry is from an album not the artist level itself
+
+        bool shuffle = false;
+        if (first_enqueued_entry && entry->is_directory) {
+                int depth = get_relative_depth(model->library->full_path, entry->full_path);
+
+                if (depth == 0 || depth == 1) // this is artist level
+                {
+                        depth = get_relative_depth(model->library->full_path, first_enqueued_entry->full_path);
+                        if (depth > 2)
+                                shuffle = true;
+                }
+        }
+
+        return shuffle;
+}
+
 Node *enqueue_songs(FileSystemEntry *entry, FileSystemEntry **chosen_dir, bool dont_dequeue)
 {
         Model *model = get_model();
@@ -193,13 +217,7 @@ Node *enqueue_songs(FileSystemEntry *entry, FileSystemEntry **chosen_dir, bool d
                 }
         }
 
-        bool shuffle = false;
-        if (first_enqueued_entry && entry->is_directory) {
-                int depth = get_relative_depth(model->library->full_path, entry->full_path);
-
-                if (depth == 0 || depth == 1)
-                        shuffle = true;
-        }
+        bool shuffle = should_shuffle_enqueued_songs(first_enqueued_entry, entry);
 
         if (first_enqueued_entry) {
                 autostart_if_stopped(first_enqueued_entry->full_path);
@@ -212,6 +230,8 @@ Node *enqueue_songs(FileSystemEntry *entry, FileSystemEntry **chosen_dir, bool d
                 {
                         shuffle_playlist_starting_from_song(model->playlist, first_enqueued_node);
                         move_down_list(model->playlist, first_enqueued_node, false);
+                        first_enqueued_node = first_enqueued_node->prev ? first_enqueued_node->prev
+                        : first_enqueued_node->next ? first_enqueued_node->next : first_enqueued_node;
                 }
                 else
                         shuffle_playlist(model->playlist);
@@ -382,6 +402,7 @@ void view_enqueue(bool play_immediately)
         FileSystemEntry *entry = NULL;
         Node *current_song = get_current_song();
         Node *first_enqueued_node = NULL;
+        bool start_playing = true;
         bool canGoNext = (current_song != NULL && current_song->next != NULL);
 
         if (state->currentView == TRACK_VIEW || state->currentView == HELP_VIEW) {
@@ -424,6 +445,9 @@ void view_enqueue(bool play_immediately)
                         return;
                 }
 
+                if (!model->state.ui.treeCtx.chosen_dir)
+                        start_playing = false;
+
                 // Enqueue / dequeue playlist file (toggle, mirroring directory behaviour)
                 if (is_m3u_file(entry)) {
                         first_enqueued_node = enqueue_playlist(entry, play_immediately);
@@ -434,7 +458,7 @@ void view_enqueue(bool play_immediately)
                 set_dirty(DIRTY_LIBRARY | DIRTY_SEARCH);
         }
 
-        if (!first_enqueued_node && entry && entry->is_enqueued) {
+        if (start_playing && !first_enqueued_node && entry && entry->is_enqueued) {
                 if (entry->is_directory && entry->children) {
                         (void)find_node_in_list(playlist, entry->children->id, &first_enqueued_node);
                 } else {

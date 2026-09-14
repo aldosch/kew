@@ -63,7 +63,7 @@ void load_song(Node *song, bool is_first_decoder, bool replace_next_song)
                 return;
         }
 
-        bool result = sound_system_is_deconding_possible(sound_sys, song->song.file_path);
+        bool result = sound_system_is_decoding_possible(sound_sys, song->song.file_path);
 
         if (result < 1)
         {
@@ -299,7 +299,10 @@ void check_and_load_next_song(double seconds)
                         state->ui.songWasRemoved = false;
 
                         if (is_shuffle_enabled())
+                        {
                                 reshuffle_playlist();
+                                insert_as_first(next_song, playlist);
+                        }
 
                         int res = prepare_and_play_song(next_song, seconds);
 

@@ -16,6 +16,7 @@
 
 #include "img_func.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -558,7 +559,7 @@ int draw_square_bitmap_to_buf(DrawBuffer *buf, int row, int col,
         int cell_height = 16;
 
         // Validate arguments.
-        if (!buf || !buf->cells || !term_size || !pixels) {
+        if (!draw_occupied_markers && ! just_mark_cover && (!buf || !buf->cells || !term_size || !pixels)) {
                 k_log("Invalid draw arguments.");
                 return 0;
         }
@@ -568,7 +569,7 @@ int draw_square_bitmap_to_buf(DrawBuffer *buf, int row, int col,
                 return 0;
         }
 
-        if (width <= 0 || height <= 0) {
+        if (!draw_occupied_markers && ! just_mark_cover && (width <= 0 || height <= 0)) {
                 k_log("Invalid image dimensions.");
                 return 0;
         }
@@ -579,14 +580,14 @@ int draw_square_bitmap_to_buf(DrawBuffer *buf, int row, int col,
         }
 
         // Validate RGBA8 buffer size.
-        if ((size_t)width > SIZE_MAX / 4) {
+        if (!draw_occupied_markers && ! just_mark_cover && ((size_t)width > SIZE_MAX / 4)) {
                 k_log("Image width overflow.");
                 return 0;
         }
 
         size_t stride = (size_t)width * 4;
 
-        if ((size_t)height > SIZE_MAX / stride) {
+        if (!draw_occupied_markers && ! just_mark_cover && ((size_t)height > SIZE_MAX / stride)) {
                 k_log("Image size overflow.");
                 return 0;
         }
@@ -625,6 +626,11 @@ int draw_square_bitmap_to_buf(DrawBuffer *buf, int row, int col,
 
         // Source image aspect.
         float image_ratio = (float)width / (float)height;
+
+        if (isnan(image_ratio))
+        {
+                image_ratio = 1.0;
+        }
 
         // Keep requested height.
         int corrected_height = base_height;
