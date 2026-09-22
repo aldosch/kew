@@ -1,61 +1,73 @@
 # Aldo Dracula - kew port of the aldo-dracula palette
 # (matches ~/.config/opencode/themes/aldo-dracula.json and nvim/lua/aldo-dracula.lua)
+#
+# Palette SLOT numbers, not hex: Ghostty re-resolves palette-indexed cells
+# against the active theme's palette on every repaint, so one theme follows
+# both ghostty modes (dark: aldo-dracula, light: aldo-dracula-light) when
+# macOS appearance flips. Hex/truecolor would be baked into the grid and
+# strand light ink on a light background. Same convention as
+# ~/.config/fish/conf.d/aldo-dracula-palette.fish.
+#
+# SLOT MAP (what each slot is in both ghostty aldo-dracula* themes):
+#   1 red  2 green  3 yellow  4 blue (purple)  5 magenta (pink)
+#   6 cyan 7 white (fg ink)  8 brblack (muted)
+#   -1 = default terminal foreground (follows the theme's foreground).
 
 [theme]
 name=Aldo Dracula
 author=aldosch
 
 # Core colors
-accent=#bd93f9
-text=#f8f8f2
-textDim=#6272a4
-textMuted=#44475a
+accent=4
+text=-1
+textDim=8
+textMuted=8
 
 # General Colors
-logo=#bd93f9
-header=#8be9fd
-footer=#44475a
-help=#6272a4
-link=#8be9fd
-nowplaying=#ff79c6
-playbackstatus=#6272a4
+logo=4
+header=6
+footer=8
+help=8
+link=6
+nowplaying=5
+playbackstatus=8
 
 # Playlist View
-playlist.rownum=#6272a4
-playlist.title=#f8f8f2
-playlist.playing=#50fa7b
+playlist.rownum=8
+playlist.title=-1
+playlist.playing=2
 
 # Track View
-trackview.title=#f8f8f2
-trackview.artist=#8be9fd
-trackview.album=#ff79c6
-trackview.year=#6272a4
-trackview.time=#f8f8f2
-trackview.visualizer=#bd93f9
-trackview.lyrics=#f8f8f2
+trackview.title=-1
+trackview.artist=6
+trackview.album=5
+trackview.year=8
+trackview.time=-1
+trackview.visualizer=4
+trackview.lyrics=-1
 
 # Library View
-library.artist=#8be9fd
-library.album=#bd93f9
-library.track=#f8f8f2
-library.enqueued=#8be9fd
-library.playing=#50fa7b
+library.artist=6
+library.album=4
+library.track=-1
+library.enqueued=6
+library.playing=2
 
 # Search
-search.label=#ff79c6
-search.query=#f8f8f2
-search.result=#f8f8f2
-search.enqueued=#8be9fd
-search.playing=#50fa7b
+search.label=5
+search.query=-1
+search.result=-1
+search.enqueued=6
+search.playing=2
 
 # Progress
-progress.filled=#bd93f9
-progress.elapsed=#ff79c6
-progress.empty=#44475a
-progress.duration=#6272a4
+progress.filled=4
+progress.elapsed=5
+progress.empty=8
+progress.duration=8
 
 # Status
 status.info=-1      	# Default foreground
-status.warning=#f1fa8c
-status.error=#ff5555
-status.success=#50fa7b
+status.warning=3
+status.error=1
+status.success=2
