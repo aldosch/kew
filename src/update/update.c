@@ -31,6 +31,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
 
 // kew uses the Model-View-Update pattern.
 //
@@ -53,6 +54,8 @@
 // Audio playback
 // Threading
 // Anything non-deterministic or external
+
+static time_t refresh_set_time;
 
 size_t string_hash(const char *str)
 {
@@ -384,7 +387,7 @@ void set_scrollbar_positions()
         }
 
         if (model->state.currentView == HELP_VIEW) {
-                if (model->state.ui.chosen_help_row >= 0) {
+                if (model->state.ui.chosen_help_row >= 0 && model->state.ui.help_region.height > 0) {
                         double position =
                             (double)model->state.ui.chosen_help_row /
                             (double)model->state.ui.help_region.height;
@@ -396,6 +399,19 @@ void set_scrollbar_positions()
                         if (new_pos != model->state.ui.help_scrollbar.position)
                                 set_dirty(DIRTY_ALL);
                 }
+        }
+}
+
+void refresh_if_timeout(void)
+{
+        Model *model = get_model();
+        time_t now = time(NULL);
+
+        if (difftime(now, refresh_set_time) >= PERIODICAL_REFRESH_TIMEOUT_SECONDS)
+        {
+                if (model->state.currentView != TRACK_VIEW)
+                        set_dirty(DIRTY_ALL);
+                refresh_set_time = now;
         }
 }
 
@@ -421,6 +437,9 @@ UpdateResult update(Model *model, struct Msg *msg)
                 advance_title_delay_anim(model);
                 advance_name_scroll_anim(model);
                 advance_glimmer_anim(model);
+
+                clear_error_message_if_timeout();
+                refresh_if_timeout();
 
                 if (model->songdata_ok)
                         model->song_duration = model->songdata->duration;
@@ -577,6 +596,11 @@ UpdateResult update(Model *model, struct Msg *msg)
                 c_strcpy(settings->allowNotifications,
                          model->state.settings.allowNotifications ? "1" : "0",
                          sizeof(settings->allowNotifications));
+
+                if (model->state.settings.allowNotifications)
+                        set_error_message("Notifications On");
+                else
+                        set_error_message("Notifications Off");
                 break;
 
         case MSG_SHUFFLE:
@@ -667,6 +691,7 @@ UpdateResult update(Model *model, struct Msg *msg)
 
         case MSG_TOGGLECROSSFADE:
                 model->state.settings.always_crossfade = !model->state.settings.always_crossfade;
+                set_error_message(model->state.settings.always_crossfade ? "Always crossfade" : "Always Crossfade Off");
                 set_dirty(DIRTY_FOOTER);
                 result.cmd.type = CMD_TOGGLECROSSFADE;
                 break;
@@ -918,7 +943,7 @@ UpdateResult update(Model *model, struct Msg *msg)
                 model->progressBar.col = msg->region.col + 1;
                 model->progressBar.row = msg->region.row + 1;
                 model->progressBar.length = msg->region.width;
-                
+
                 if (msg->footer_row != DISABLED_ROW) {
                         model->state.ui.footer_row = msg->footer_row + 1;
                         model->state.ui.footer_col = msg->region.col + 1;

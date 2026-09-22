@@ -10,15 +10,14 @@
 #include "playback_state.h"
 
 #include "common/appstate.h"
+#include "common/common.h"
 
 #include "sound/sound_facade.h"
 
 #include "loader/song_loader.h"
 #include <math.h>
 
-#ifdef DEBUG
 #include "utils/k_log.h"
-#endif
 
 int shuffle_enabled;
 
@@ -33,6 +32,9 @@ void set_shuffle_enabled(int value)
 
         shuffle_enabled = value == 1 ? 1 : 0;
         state->settings.shuffle_enabled = value;
+        char error_message[ERROR_MESSAGE_LENGTH];
+        snprintf(error_message, sizeof(error_message), "Shuffle Mode %s", shuffle_enabled ? "On" : "Off");
+        set_error_message(error_message);
 }
 
 bool is_repeat_list_enabled(void)
@@ -115,6 +117,11 @@ void set_volume(int vol)
 
 SongData *get_current_song_data(SongData *previous_songdata)
 {
+        Model *model = get_model();
+
+        if (model->state.settings.verbose_mode)
+                k_log("get_current_song_data() entered");
+
         if (get_current_song() == NULL)
         {
                 unload_song_data(&previous_songdata);
@@ -154,12 +161,10 @@ SongData *get_current_song_data(SongData *previous_songdata)
 
         set_dirty(DIRTY_ALL);
 
-        Model *model = get_model();
         model->playbackState.notifySwitch = 1;
 
-#ifdef DEBUG
         // Log basic stats
         k_log("New songdata: %s duration: %f", song_data->file_path, song_data->duration);
-#endif
+
         return songdata_clone(song_data);
 }

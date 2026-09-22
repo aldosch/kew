@@ -1,5 +1,43 @@
 # CHANGELOG
 
+## kew 4.3.5
+
+The first month of "Project Joy", where we are trying to get people to post about the little annoyances and glitches in kew, went very well. We got a lot of suggestions and I have been implementing those. Just keep going, post more issues. We want to fix the tiny little details.
+
+There's a bug on CachyOS that we believe is related to chafa crashing on Zen 5 CPUs. There will be a new version of Chafa soon.
+
+/Ravachol
+
+#### Enhancements:
+
+-  Smooth looping, ie gapless playback on repeated tracks. By @ravachol. Requested by @AnotherPlayer8.
+
+- Added info message for common toggles and cycles like theme notifications, shuffle, repeat. These has been a 'Project Joy' request by several people. By @ravachol.
+
+- Error messages time out after 3 seconds. By @ravachol.
+
+- Check m3u playlists for relative paths not only for the location of the .m3u but also against the music library. By @ravachol. Suggested by @partisani.
+
+- Added verbose mode, to help with debuggging. Run with --verbose. By @ravachol.
+
+#### Bug fixes:
+
+- Fixes issue where scrolling in help view leaves the bottom part cut off. By @ravachol.
+
+- Fixes when a song is enqueued in library and album colors is the color mode, a song further down gets colored. By @ravachol.
+
+- Fixes when a mini control is clicked, the song in the library on the same row disappears. By @ravachol.
+
+- Fix bug in progress bar below side cover. By ®ravachol.
+
+- Fixes several bugs in choose_album_song. By @ravachol.
+
+- Fixes wide covers in landscape mode being vertically centerded. By @nhuvaynhe.
+
+- Fix undefined behavior in help view. Reported by @petoem. By ®ravachol.
+
+- Fix shuffle bug where the first enqueued song is played second in the shufle list. Found by @Oyouu. By @ravachol.
+
 ## kew 4.3.4
 
 #### Bug fixes:

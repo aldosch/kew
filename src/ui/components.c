@@ -1107,8 +1107,7 @@ ComponentMsg component_side_cover(const Model *model, k_Rect region, DrawBuffer 
             .height = 1,
         };
 
-        if (dirty & DIRTY_PROGRESS && model->progressBar.row >= 0 && model->progressBar.col >= 0
-        && model->progressBar.length >= 0) {
+        if (dirty & DIRTY_PROGRESS && model->progressBar.row >= 0 && model->progressBar.col >= 0 && model->progressBar.length >= 0) {
                 progress_rect.row = model->progressBar.row - 1;
                 progress_rect.col = model->progressBar.col - 1;
                 progress_rect.width = model->progressBar.length;
@@ -1231,8 +1230,13 @@ ComponentMsg component_landscape_cover(const Model *model, k_Rect region, DrawBu
                 return (ComponentMsg){0};
 
         int cover_indent = 1;
+        int vertical_indent = 1;
 
-        int target_height = region.height;
+        int available_height = region.height - 2;
+        int target_height = available_height;
+
+        if (available_height <= 0)
+                return (ComponentMsg){0};
 
         gint cell_width = 8;
         gint cell_height = 16;
@@ -1254,15 +1258,16 @@ ComponentMsg component_landscape_cover(const Model *model, k_Rect region, DrawBu
         if (target_height <= MIN_COVER_SIZE)
                 return (ComponentMsg){0};
 
-        // Use region as base, row is centered within region, col is offset from region.col
-        int row = region.row + lroundf((float)region.height / 2.0f - (float)target_height / 2.0f);
+        int row = region.row + vertical_indent +
+                  (available_height - target_height) / 2;
+
         int col = region.col + cover_indent;
 
         // Clear skipped lines
         if (row > 0) {
                 CellStyle style = cell_style_plain();
 
-                for (int i = 0; i < row; i++) {
+                for (int i = region.row; i < row; i++) {
                         draw_buffer_set_string_truncated(buf, i, region.col,
                                                          "", region.width, style);
                 }
@@ -2269,7 +2274,7 @@ ComponentMsg component_progress_bar(const Model *model, k_Rect region, DrawBuffe
                                           : settings->progressBarCurrentOddChar;
                 }
 
-                draw_buffer_set_string(buf, region.row, draw_col, ch, style);
+                draw_buffer_set_string_truncated(buf, region.row, draw_col, ch, 1, style);
                 draw_col++;
         }
 
@@ -3177,7 +3182,7 @@ ComponentMsg component_help(const Model *model, k_Rect region, DrawBuffer *buf,
 // Keybinding lines
 #define HELP_LINE(fmt, ...)                                                 \
         do {                                                                \
-                if (row >= region.row + region.height)                      \
+                if (output_row >= region.row + region.height)               \
                         goto render_scrollbar;                              \
                 if (model->state.ui.chosen_help_row <= row) {               \
                         char _line[512];                                    \
@@ -3291,7 +3296,7 @@ ComponentMsg component_help(const Model *model, k_Rect region, DrawBuffer *buf,
         row += 2;
         output_row += 2;
 
-        if (row >= region.row + region.height)
+        if (output_row >= region.row + region.height)
                 goto render_scrollbar;
 
         if (model->state.ui.chosen_help_row <= row) {
@@ -3305,7 +3310,7 @@ ComponentMsg component_help(const Model *model, k_Rect region, DrawBuffer *buf,
 
         row += 2;
 
-        if (row >= region.row + region.height)
+        if (output_row >= region.row + region.height)
                 goto render_scrollbar;
 
         // Wikidata license
@@ -3319,7 +3324,7 @@ ComponentMsg component_help(const Model *model, k_Rect region, DrawBuffer *buf,
         }
         row += 2;
 
-        if (row >= region.row + region.height)
+        if (output_row >= region.row + region.height)
                 goto render_scrollbar;
 
         // Copyright

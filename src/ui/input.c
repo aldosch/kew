@@ -35,7 +35,6 @@
 #include "ops/search_ops.h"
 #include "ops/track_manager.h"
 
-#include "utils/k_log.h"
 #include "utils/term.h"
 #include "utils/utils.h"
 
@@ -444,7 +443,7 @@ enum MsgType get_mouse_minicontrols_event(int mouse_x_on_text, const char *text)
         }
 
         if (result != MSG_NONE)
-                set_dirty(DIRTY_SONG);
+                set_dirty(DIRTY_ALL);
 
         Model *model = get_model();
         if (result == MSG_PLAY_PAUSE && model->songdata == NULL) {
@@ -660,7 +659,7 @@ void handle_cooldown(void)
                                 state->ui.isRewinding = false;
 
                                 if (state->currentView != TRACK_VIEW) {
-                                        set_dirty(DIRTY_FOOTER | DIRTY_PROGRESS);
+                                        set_dirty(DIRTY_ALL);
                                 }
                         }
                 }

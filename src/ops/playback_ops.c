@@ -11,6 +11,7 @@
 
 #include "playback_ops.h"
 
+#include "common/common.h"
 #include "common/model.h"
 #include "playback_clock.h"
 #include "playback_state.h"
@@ -197,7 +198,11 @@ void volume_change(int change_percent)
         int sound_volume = get_volume();
         sound_volume += change_percent;
 
+        char error_message[ERROR_MESSAGE_LENGTH];
+
         set_volume(sound_volume);
+        snprintf(error_message, sizeof(error_message), "Volume %d %s%d%s", get_volume(), change_percent > 0 ? "+" : "", change_percent, "%");
+        set_error_message(error_message);
         set_dirty(DIRTY_VISUALIZER);
 }
 

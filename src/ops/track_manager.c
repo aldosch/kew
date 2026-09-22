@@ -19,6 +19,7 @@
 #include "playback_system.h"
 #include "playlist_ops.h"
 
+#include "sound/audiotypes.h"
 #include "sound/sound_facade.h"
 
 #include "sys/mpris.h"
@@ -33,20 +34,23 @@
 #include <stdbool.h>
 
 typedef enum {
-    LOAD_OK,
-    LOAD_BAD_FILE
+        LOAD_OK,
+        LOAD_BAD_FILE
 } SongLoadResult;
 
 typedef enum {
-    PLAYBACK_EVENT_EOF,
-    PLAYBACK_EVENT_METADATA_SWITCH,
-    PLAYBACK_EVENT_LOAD_SUCCESS,
-    PLAYBACK_EVENT_LOAD_FAILED
+        PLAYBACK_EVENT_EOF,
+        PLAYBACK_EVENT_METADATA_SWITCH,
+        PLAYBACK_EVENT_LOAD_SUCCESS,
+        PLAYBACK_EVENT_LOAD_FAILED
 } PlaybackEvent;
 
 void load_song(Node *song, bool is_first_decoder, bool replace_next_song)
 {
         Model *model = get_model();
+
+        k_log("load_song() entered");
+
         if (model->state.settings.replayGainCheckFirst == 3)
                 sound_system_set_replay_gain_check_first(sound_sys, is_shuffle_enabled() ? 0 : 1);
         else
@@ -65,20 +69,16 @@ void load_song(Node *song, bool is_first_decoder, bool replace_next_song)
 
         bool result = sound_system_is_decoding_possible(sound_sys, song->song.file_path);
 
-        if (result < 1)
-        {
+        if (result < 1) {
                 ps->songHasErrors = true;
                 k_log("load_song: song has errors: '%s'\n", song->song.file_path);
-        }
-        else {
+        } else {
                 sound_result_t sound_result = sound_system_load(sound_sys, song->song.file_path, is_first_decoder, replace_next_song);
 
-                if (sound_result == SOUND_ERROR_SONG)
-                {
+                if (sound_result == SOUND_ERROR_SONG) {
                         ps->songHasErrors = true;
                         k_log("load_song: song has errors (SOUND_ERROR_SONG): '%s'\n", song->song.file_path);
-                }
-                else {
+                } else {
                         k_log("load_song: song loaded without errors: '%s'\n", song->song.file_path);
                 }
         }
@@ -86,14 +86,28 @@ void load_song(Node *song, bool is_first_decoder, bool replace_next_song)
 
 void load_next_song(bool replace_next_song)
 {
-        PlaybackState *ps = get_playback_state();
+        Model *model = get_model();
+        PlaybackState *ps = &model->playbackState;
+
+        if (model->state.settings.verbose_mode)
+                k_log("load_next_song() entered");
 
         ps->songLoading = true;
         ps->nextSongNeedsRebuilding = false;
         ps->skipFromStopped = false;
 
-        set_try_next_song(get_list_next(get_current_song()));
-        set_next_song(get_try_next_song());
+        if (get_repeat_state() != SOUND_STATE_REPEAT) {
+
+                set_try_next_song(get_list_next(get_current_song()));
+                set_next_song(get_try_next_song());
+
+        } else {
+
+                set_try_next_song(get_current_song());
+                set_next_song(get_try_next_song());
+
+        }
+
         load_song(get_next_song(), false, replace_next_song);
 }
 
@@ -164,7 +178,7 @@ void determine_song_and_notify(void)
                 current->song.duration = model->songdata->duration;
         }
 
-        if (state->ui.lastNotifiedId != current->id  && model->songdata_ok && model->songdata) {
+        if (state->ui.lastNotifiedId != current->id && model->songdata_ok && model->songdata) {
                 if (!isDeleted) {
                         notify_song_switch(model->songdata);
                 }
@@ -249,6 +263,11 @@ int prepare_and_play_song(Node *song, double seconds)
         if (!song)
                 return -1;
 
+        Model *model = get_model();
+
+        if (model->state.settings.verbose_mode)
+                k_log("prepare_and_play_song() entered");
+
         set_current_song(song);
 
         stop();
@@ -298,8 +317,7 @@ void check_and_load_next_song(double seconds)
                         ps->waitingForNext = false;
                         state->ui.songWasRemoved = false;
 
-                        if (is_shuffle_enabled())
-                        {
+                        if (is_shuffle_enabled()) {
                                 reshuffle_playlist();
                                 insert_as_first(next_song, playlist);
                         }

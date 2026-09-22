@@ -30,6 +30,7 @@
 
 #include "ui/components.h"
 #include "utils/file.h"
+#include "utils/k_log.h"
 #include "utils/utils.h"
 
 static bool skip_in_progress = false;
@@ -856,7 +857,7 @@ void reshuffle_playlist(void)
                 Node *current = get_current_song();
 
                 if (current != NULL)
-                        shuffle_playlist_starting_from_song(playlist, current);
+                        shuffle_playlist_from_node(playlist, current, true);
                 else
                         shuffle_playlist(playlist);
 
@@ -937,7 +938,12 @@ void play_post_processing(bool was_end_of_list)
 
 void clear_and_play(Node *song)
 {
+        Model *model = get_model();
         PlaybackState *ps = get_playback_state();
+
+        if (model->state.settings.verbose_mode)
+                k_log("enqueue_album() entered");
+
         set_song_to_start_from(song);
         sound_system_stop_decoding(sound_sys);
         start_playing(true);
