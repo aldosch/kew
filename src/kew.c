@@ -35,7 +35,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 #endif
 
 #ifndef KEW_VERSION
-#define KEW_VERSION "4.3.5"
+#define KEW_VERSION "4.3.6"
 #endif
 
 #include "common/appstate.h"
@@ -523,11 +523,6 @@ void run(bool start_playing)
                 if (model->state.settings.currentSongId > 0 && model->state.settings.auto_resume) {
                         auto_resume(&seconds);
                 }
-        }
-
-        if (model->state.settings.chromaPreset >= 0) {
-                chroma_set_current_preset(model->state.settings.chromaPreset);
-                model->state.settings.visualizations_instead_of_cover = true;
         }
 
         model->playbackState.loadedNextSong = false;

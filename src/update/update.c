@@ -410,7 +410,8 @@ void refresh_if_timeout(void)
         if (difftime(now, refresh_set_time) >= PERIODICAL_REFRESH_TIMEOUT_SECONDS)
         {
                 if (model->state.currentView != TRACK_VIEW)
-                        set_dirty(DIRTY_ALL);
+                        set_dirty(DIRTY_PROGRESS | DIRTY_LIBRARY | DIRTY_PLAYLIST | DIRTY_SEARCH | DIRTY_HELP);
+
                 refresh_set_time = now;
         }
 }

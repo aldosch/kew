@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## kew 4.3.6
+
+Pushing this one out because the screen flickers every 3 seconds on ghostty in 4.3.5.
+
+This also adds kew to the apps that can open with.. in Linux and Windows file explorers.
+
+- Ravachol
+
+#### Enhancements:
+
+- Added Open With kew so you can select files or folders and launch kew from there. Requested by @theDyze. By @ravachol.
+
+- By default, Chroma will cycle through presets every 30 seconds. If you press next preset then it changes to a fixed preset. By @yuri-xyz (Chroma) and @ravachol.
+
+#### Bug Fixes:
+
+- Fixes bug with vertically centering non-square album covers. By @ravachol.
+
+- Fix flicker on tty and ghostty. By @ravachol. Reported by @Erwin-Iosef.
+
+- Improve click detection in minicontrols. By @ravachol.
+
+- Set shuffle mode on when user runs kew shuffle <music>. By @ravachol.
+
 ## kew 4.3.5
 
 The first month of "Project Joy", where we are trying to get people to post about the little annoyances and glitches in kew, went very well. We got a lot of suggestions and I have been implementing those. Just keep going, post more issues. We want to fix the tiny little details.

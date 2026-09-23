@@ -1870,7 +1870,7 @@ void load_settings_into_ui(AppSettings *settings, UISettings *ui)
         if (settings->chromaPreset[0] != '\0') {
                 tmp = get_number(settings->chromaPreset);
 
-                if (tmp >= 0)
+                if (tmp >= -1)
                         ui->chromaPreset = tmp;
         }
 
@@ -2657,6 +2657,8 @@ static inline DirtyFlags parse_dirty(const char *str)
                 return DIRTY_PLAYLIST;
         if (strcmp(str, "search") == 0)
                 return DIRTY_SEARCH;
+        if (strcmp(str, "help") == 0)
+                return DIRTY_HELP;
         if (strcmp(str, "footer") == 0)
                 return DIRTY_FOOTER;
         if (strcmp(str, "visualizer") == 0)
