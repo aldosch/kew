@@ -2677,7 +2677,7 @@ ComponentMsg component_track_landscape_normal(const Model *model, k_Rect region,
         }
 
         // Time
-        if (height > meta_row + metadata_height + time_height) {
+        if (!model->state.settings.hideTimeStatus && height > meta_row + metadata_height + time_height) {
                 k_Rect time_rect = {
                     .row = region.row + meta_row + metadata_height,
                     .col = region.col + col,
@@ -3011,6 +3011,7 @@ ComponentMsg component_track_portrait_normal(const Model *model, k_Rect region, 
         int visualizer_width = model->state.ui.visualizer_width;
         int visualizer_height = model->state.settings.visualizer_height;
         int metadata_height = 4;
+        int timeStatus_height = 1;
 
         // Cover art or chroma frame
         k_Rect cover_rect = {
@@ -3041,17 +3042,20 @@ ComponentMsg component_track_portrait_normal(const Model *model, k_Rect region, 
             .width = region.width,
             .height = 1,
         };
-        if (dirty & DIRTY_VISUALIZER) {
+        if (!model->state.settings.hideTimeStatus && dirty & DIRTY_VISUALIZER) {
 
                 if (model->state.settings.simpleTimeStatus)
                         component_time_simple_and_vol(model, time_rect, buf, dirty);
                 else
                         component_time(model, time_rect, buf, dirty);
         }
+        else {
+                timeStatus_height = 0;
+        }
 
         // Lyrics (timestamped, inline)
         k_Rect lyrics_rect = {
-            .row = meta_row + metadata_height + 1,
+            .row = meta_row + metadata_height + timeStatus_height,
             .col = region.col,
             .width = region.width - 1,
             .height = 1,
@@ -3064,7 +3068,7 @@ ComponentMsg component_track_portrait_normal(const Model *model, k_Rect region, 
 
         // Visualizer
         k_Rect viz_rect = {
-            .row = meta_row + metadata_height + 2,
+            .row = meta_row + metadata_height + timeStatus_height + 1,
             .col = indent,
             .width = visualizer_width + 1,
             .height = visualizer_height,

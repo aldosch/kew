@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## kew 4.3.8
+
+- Fix windows installer error. By @ravachol.
+
+## kew 4.3.7
+
+#### Enhancements:
+
+- Added ALAC support again. Different lib this time: https://github.com/mikebrady/shairport-sync/blob/master/alac.h. By @ravachol.
+
+- Added man pages for kewrc and kewstaterc. By @ravachol. Suggested by @jsteitz.
+
+#### Bug Fixes:
+
+- Respect mouseEnabled=0 and hideTimeStatus=1 again. These settings were lost during the UI rewrite. By @ravachol. Reported by @jsteitz.
+
+- Fix keybindings with Ctrl+a..z being ignored. By @ravachol. Reported by @jsteitz.
+
+- Windows: Fix crash when running kew not as a shortcut but from within a terminal. This was caused by adding SMTC windows media key integration and ISystemMediaTransportControlsInterop::GetForWindow checking window ownership internally and throwing E_ACCESSDENIED because the HWND is owned by the terminal. By @ravachol. Reported by @battlelitany.
+
+- Fix Chroma printed in the wrong position for songs with non-square album covers. By @nhuvaynhe.
+
+- Fix crash sometimes when there was no song cover. By @ravachol. Found by @SoupKitten.
+
 ## kew 4.3.6
 
 Pushing this one out because the screen flickers every 3 seconds on ghostty in 4.3.5.
