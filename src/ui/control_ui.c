@@ -99,6 +99,9 @@ void seek_back(Model *model)
 
         int seconds = (int)(duration * (step_percent / 100.0));
 
+        if (seconds == 0)
+                seconds = 1;
+
         seek(-seconds);
 
         set_dirty(DIRTY_FOOTER);
@@ -500,7 +503,7 @@ int load_theme(const char *theme_name,
             load_theme_from_file(themes_dir, lower_filename, &state->settings.theme);
         if (!loaded) {
                 free(config_path);
-                free(lower_filename);
+                g_free(lower_filename);
                 return 0; // failed to load
         }
 

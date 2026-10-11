@@ -67,12 +67,19 @@ typedef struct m4a_decoder {
 
         // alac fields...
         alac_file *alac;
-        uint8_t *alacScratch; // reusable decode output buffer
+        uint8_t *alacScratch; // Reusable decode output buffer
         size_t alacScratchSize;
 
         int32_t audio_track_index;
-        uint32_t current_sample;
+        uint32_t current_sample; // Index of the next MP4 track sample to decode. This is not a PCM frame counter.
         uint32_t total_samples;
+        uint64_t start_dts;
+
+        // Raw ADTS frame index, built once so seeking does not rescan the file.
+        uint64_t *adts_frame_offsets;
+        uint64_t *adts_pcm_offsets;
+        uint32_t adts_frame_count;
+        uint64_t adts_total_pcm_frames;
 
         uint8_t leftoverBuffer[MAX_SAMPLES *
                                MAX_CHANNELS *
@@ -459,46 +466,85 @@ MA_API ma_result m4a_decoder_init(
         return MA_SUCCESS;
 }
 
-double calculate_aac_duration(FILE *fp, unsigned long sample_rate, unsigned long *totalFrames)
+static ma_result build_adts_index(m4a_decoder *decoder)
 {
-        if (fp == NULL || sample_rate == 0 || totalFrames == NULL) {
-                return -1.0;
+        if (decoder == NULL || decoder->file == NULL || decoder->file_size <= 0)
+                return MA_INVALID_ARGS;
+
+        uint32_t capacity = 0;
+        uint64_t offset = 0;
+        uint64_t pcm_offset = 0;
+        while (offset < (uint64_t)decoder->file_size) {
+                uint8_t header[7];
+
+                if ((uint64_t)decoder->file_size - offset < sizeof(header) ||
+                    fseeko(decoder->file, (off_t)offset, SEEK_SET) != 0 ||
+                    fread(header, 1, sizeof(header), decoder->file) !=
+                        sizeof(header))
+                        return MA_INVALID_FILE;
+                if (header[0] != 0xff || (header[1] & 0xf6) != 0xf0)
+                        return MA_INVALID_FILE;
+
+                // lowest bit of header[1] is the protection_absent flag
+                // that shows if CRC protection is present or not
+                // if its protected then header is 9 bytes, otherwise 7 bytes
+                uint32_t header_size = (header[1] & 1) ? 7u : 9u;
+
+                uint32_t frame_size =
+                    ((uint32_t)(header[3] & 3) << 11) |
+                    ((uint32_t)header[4] << 3) |
+                    ((uint32_t)(header[5] & 0xe0) >> 5);
+
+                if (frame_size < header_size ||
+                    frame_size > 8191 ||            // frame length = 13 bits & largest 13 bit number = 8191
+                    frame_size > (uint64_t)decoder->file_size - offset)
+                        return MA_INVALID_FILE;
+
+                // filled all currently allocated index slots - allocate more slots
+                if (decoder->adts_frame_count == capacity) {
+                        uint32_t new_capacity = capacity ? capacity * 2 : 1024;
+                        size_t allocation_size =
+                            (size_t)new_capacity * sizeof(uint64_t);
+                        if (new_capacity < capacity ||
+                            allocation_size / sizeof(uint64_t) != new_capacity)
+                                return MA_OUT_OF_MEMORY;
+                        void *new_offsets = realloc(
+                            decoder->adts_frame_offsets,
+                            allocation_size);
+                        if (new_offsets == NULL)
+                                return MA_OUT_OF_MEMORY;
+                        decoder->adts_frame_offsets = new_offsets;
+                        void *new_pcm_offsets = realloc(
+                            decoder->adts_pcm_offsets,
+                            allocation_size);
+                        if (new_pcm_offsets == NULL)
+                                return MA_OUT_OF_MEMORY;
+                        decoder->adts_pcm_offsets = new_pcm_offsets;
+                        capacity = new_capacity;
+                }
+
+                decoder->adts_frame_offsets[decoder->adts_frame_count] = offset;
+                decoder->adts_pcm_offsets[decoder->adts_frame_count] = pcm_offset;
+                decoder->adts_frame_count++;
+                // lowest 2 bytes of header[6] hold number_of_raw_data_blocks_in_frame - 1
+                uint64_t frame_pcm_count = ((uint64_t)(header[6] & 3) + 1) * 1024;
+                if (pcm_offset > UINT64_MAX - frame_pcm_count)
+                        return MA_OUT_OF_MEMORY;
+                pcm_offset += frame_pcm_count;
+                offset += frame_size;
         }
 
-        unsigned char buffer[7];
-        unsigned long file_size = 0;
-        *totalFrames = 0;
-
-        // Get file size
-        fseek(fp, 0, SEEK_END);
-        file_size = ftell(fp);
-        fseek(fp, 0, SEEK_SET);
-
-        // Loop to count frames
-        while (ftell(fp) < (long)(file_size - 7)) // Ensure at least an ADTS header remains
-        {
-                // Read header
-                if (fread(buffer, 1, 7, fp) < 7)
-                        break;
-
-                // Extract frame size
-                unsigned int frameSize = ((buffer[3] & 0x03) << 11) | ((buffer[4] & 0xFF) << 3) | ((buffer[5] & 0xE0) >> 5);
-
-                if (frameSize <= 7)
-                        break;
-
-                // Skip to next frame
-                fseek(fp, frameSize - 7, SEEK_CUR);
-
-                (*totalFrames)++;
-        }
-
-        // Compute duration using: duration = (totalFrames * 1024) / sample_rate
-        double duration = (double)(*totalFrames * 1024) / sample_rate;
-
-        fseek(fp, 0, SEEK_SET);
-
-        return duration;
+        if (decoder->adts_frame_count == 0)
+                return MA_INVALID_FILE;
+        decoder->adts_total_pcm_frames = pcm_offset;
+        decoder->totalFrames = decoder->adts_frame_count;
+        decoder->duration = (double)pcm_offset / decoder->sample_rate;
+        if (decoder->duration > 0.0)
+                decoder->avg_bit_rate = (ma_uint32)
+                    (((double)decoder->file_size * 8.0) / decoder->duration);
+        if (fseeko(decoder->file, 0, SEEK_SET) != 0)
+                return MA_ERROR;
+        return MA_SUCCESS;
 }
 
 uint32_t read_u32be(FILE *fp)
@@ -587,6 +633,8 @@ MA_API ma_result m4a_decoder_init_file(
     const ma_allocation_callbacks *p_allocation_callbacks,
     m4a_decoder *pM4a)
 {
+        FILE *fp = NULL;
+
         (void)p_allocation_callbacks;
 
         if (pFilePath == NULL || pM4a == NULL) {
@@ -598,7 +646,38 @@ MA_API ma_result m4a_decoder_init_file(
                 return result;
         }
 
-        FILE *fp = fopen(pFilePath, "rb");
+        pM4a->file = NULL;
+        pM4a->mp4 = NULL;
+        pM4a->hDecoder = NULL;
+        pM4a->alac = NULL;
+        pM4a->buffer = NULL;
+        pM4a->buffer_size = 0;
+        pM4a->alacScratch = NULL;
+        pM4a->alacScratchSize = 0;
+
+        pM4a->file_size = 0;
+        pM4a->file_type = k_unknown;
+
+        pM4a->audio_track_index = -1;
+        pM4a->audio_track_id = 0;
+
+        pM4a->current_sample = 0;
+        pM4a->total_samples = 0;
+        pM4a->adts_frame_offsets = NULL;
+        pM4a->adts_pcm_offsets = NULL;
+        pM4a->adts_frame_count = 0;
+        pM4a->adts_total_pcm_frames = 0;
+
+        pM4a->leftoverSampleCount = 0;
+        pM4a->cursor = 0;
+
+        pM4a->sample_rate = 0;
+        pM4a->channels = 0;
+        pM4a->sampleSize = 0;
+        pM4a->bit_depth = 0;
+        pM4a->avg_bit_rate = 0;
+
+        fp = fopen(pFilePath, "rb");
         if (fp == NULL) {
                 return MA_INVALID_FILE;
         }
@@ -624,294 +703,186 @@ MA_API ma_result m4a_decoder_init_file(
         pM4a->file = fp;
 
         // Try to detect the file format (ADTS, MP4, LATM, etc.)
-        unsigned char buffer[7];
-        size_t bytes_read = fread(buffer, 1, sizeof(buffer), fp);
+        {
+                unsigned char header[7];
+                size_t bytes_read = fread(header, 1, sizeof(header), fp);
 
-        // Check for ADTS header
-        if (bytes_read >= 7 && buffer[0] == 0xFF && (buffer[1] & 0xF0) == 0xF0) {
-                pM4a->file_type = k_rawAAC;
-        } else {
-                // Check if it's an MP4 file (using MP4D_open or similar)
-                if (mp4_demux_open(pFilePath, &pM4a->mp4) < 0) {
-                        fclose(fp);
-                        k_log("Error initializing decoder.\n");
-                        set_error_message("Error initializing decoder (possibly a fragmented mp4 file) in the current or next file.");
-                        return MA_ERROR;
-                } else {
-                        pM4a->file_type = k_unknown; // It's an MP4 container
-                }
-        }
+                /*
+                * ADTS syncword:
+                *
+                *   12 bits: 1111 1111 1111
+                *
+                * The second byte's top four bits must therefore be 0xF.
+                */
+                if (bytes_read == sizeof(header) &&
+                    header[0] == 0xFF &&
+                    (header[1] & 0xF0) == 0xF0 &&
+                    (header[1] & 0x06) == 0x00) {
 
-        pM4a->buffer = NULL;
+                        // Raw ADTS AAC.
+                        pM4a->file_type = k_rawAAC;
 
-        if (pM4a->file_type == k_rawAAC) {
-                // Raw AAC handling
+                        // Validate the ADTS header before using fields from it.
+                        unsigned int frameSize =
+                            ((unsigned int)(header[3] & 0x03) << 11) |
+                            ((unsigned int)header[4] << 3) |
+                            ((unsigned int)(header[5] & 0xE0) >> 5);
 
-                // Extract the frame size from the ADTS header
-                unsigned int frameSize = ((buffer[3] & 0x03) << 11) | ((buffer[4] & 0xFF) << 3) | ((buffer[5] & 0xE0) >> 5);
-
-                if (frameSize <= 7) {
-                        fclose(fp);
-                        return MA_ERROR; // Invalid frame size
-                }
-
-                unsigned char *frameData = malloc(frameSize);
-                if (frameData == NULL) {
-                        fclose(fp);
-                        return MA_ERROR; // Memory allocation failed
-                }
-
-                // The first 7 bytes are already in the buffer, so copy them to frameData
-                memcpy(frameData, buffer, 7);
-
-                // Read the rest of the frame (audio data)
-                size_t remainingBytes = frameSize - 7;
-                size_t additionalBytesRead = fread(frameData + 7, 1, remainingBytes, fp);
-                if (additionalBytesRead < remainingBytes) {
-                        free(frameData);
-                        fclose(fp);
-                        return MA_ERROR; // Failed to read the full frame
-                }
-
-                // Allocate decoder config
-                unsigned char *decoder_config = malloc(2);
-                if (decoder_config == NULL) {
-                        return MA_OUT_OF_MEMORY;
-                }
-
-                unsigned long decoder_config_size = 2;
-
-                decoder_config[0] = ((buffer[2] & 0xC0) >> 6) + 1; // Object type
-                decoder_config[0] |= ((buffer[2] & 0x3C) >> 2) << 2;
-
-                decoder_config[1] = ((buffer[2] & 0x07) << 1) | ((buffer[3] & 0x80) >> 7); // Channels and sample_rate
-                decoder_config[1] <<= 4;                                                   // Shift to upper 4 bits
-
-                unsigned char objectType = decoder_config[0];
-                if (objectType == 5 || objectType >= 29) {
-                        k_log("File is encoded with HE-AAC which is not supported.");
-                        set_error_message("The current or next file is encoded with HE-AAC which is not supported.");
-                        free(frameData);
-                        free(decoder_config);
-                        fclose(fp);
-                        return MA_ERROR;
-                }
-
-                unsigned long sample_rate = 0;
-                unsigned char channels = 0;
-
-                pM4a->hDecoder = NeAACDecOpen();
-
-                int initResult = NeAACDecInit2(pM4a->hDecoder, (unsigned char *)decoder_config, decoder_config_size, &sample_rate, &channels);
-                if (initResult < 0) {
-                        k_log("Error initializing decoder. Code: %d\n", initResult);
-                        set_error_message("Error initializing decoder in the current or next file.");
-                        free(frameData);
-                        free(decoder_config);
-                        NeAACDecClose(pM4a->hDecoder);
-                        fclose(fp);
-                        return MA_ERROR;
-                }
-
-                free(decoder_config);
-
-                // Check if the sample_rate and channels are correctly initialized
-                if (sample_rate == 0 || channels == 0) {
-                        k_log("Error: Invalid sample rate or channel count.\n");
-                        set_error_message("The current or next file contains an invalid sample rate or channel count.");
-                        free(frameData);
-                        NeAACDecClose(pM4a->hDecoder);
-                        fclose(fp);
-                        return MA_ERROR;
-                }
-
-                pM4a->sample_rate = (ma_uint32)sample_rate;
-                pM4a->channels = (ma_uint32)channels;
-
-                // Clean up the frame data after processing
-                free(frameData);
-
-                // Configure output format
-                NeAACDecConfigurationPtr config_ptr = NeAACDecGetCurrentConfiguration(pM4a->hDecoder);
-                if (pM4a->format == ma_format_s16) {
-                        config_ptr->outputFormat = FAAD_FMT_16BIT;
-                        pM4a->sampleSize = sizeof(int16_t);
-                        pM4a->bit_depth = 16;
-                } else if (pM4a->format == ma_format_f32) {
-                        config_ptr->outputFormat = FAAD_FMT_FLOAT;
-                        pM4a->sampleSize = sizeof(float);
-                        pM4a->bit_depth = 32;
-                } else {
-                        // Unsupported format
-                        NeAACDecClose(pM4a->hDecoder);
-                        fclose(fp);
-                        return MA_ERROR;
-                }
-                NeAACDecSetConfiguration(pM4a->hDecoder, config_ptr);
-
-                // Initialize other fields
-                pM4a->leftoverSampleCount = 0;
-                pM4a->cursor = 0;
-
-                fseek(pM4a->file, 0, SEEK_SET);
-
-                return MA_SUCCESS;
-        } else {
-                // Find the audio track
-
-                int trackCount = mp4_demux_get_track_count(pM4a->mp4);
-
-                pM4a->audio_track_index = -1;
-
-                for (int i = 0; i < trackCount; i++) {
-
-                        struct mp4_track_info info;
-
-                        if (mp4_demux_get_track_info(pM4a->mp4, i, &info) < 0)
-                                continue;
-
-                        if (info.type == MP4_TRACK_TYPE_AUDIO) {
-
-                                pM4a->audio_track_index = i;
-                                pM4a->audio_track_id = info.id;
-                                pM4a->track = info;
-
-                                pM4a->buffer = malloc(info.sample_max_size);
-                                pM4a->buffer_size = info.sample_max_size;
-
-                                break;
-                        }
-                }
-
-                // M4A (MP4-wrapped AAC) handling
-                if (pM4a->audio_track_index == -1) {
-                        // No audio track found
-                        mp4_demux_close(pM4a->mp4);
-                        fclose(fp);
-                        return MA_ERROR;
-                }
-
-                pM4a->current_sample = 0;
-                pM4a->total_samples = pM4a->track.sample_count;
-
-                uint64_t duration_us =
-                    mp4_sample_time_to_usec(pM4a->track.duration,
-                                            pM4a->track.timescale);
-
-                if (duration_us > 0) {
-                        uint64_t bps = (pM4a->file_size * 8 * 1000000ULL) / duration_us;
-                        pM4a->avg_bit_rate = (bps + 500) / 1000; // round to nearest kbps
-                }
-
-                uint8_t alac_dsi[32];
-                size_t alac_dsi_size;
-
-                long original_position = ftell(pM4a->file);
-
-                if (is_alac(fp, alac_dsi, &alac_dsi_size)) {
-                        pM4a->file_type = k_ALAC;
-                        fseek(pM4a->file, original_position, SEEK_SET);
-
-                        if (alac_dsi_size < 24) {
-                                k_log("ALAC config too short");
+                        if (frameSize < 7 || frameSize > 8192) {
+                                fclose(fp);
+                                pM4a->file = NULL;
                                 return MA_ERROR;
                         }
 
-                        uint8_t bitDepth = alac_dsi[5];
-                        uint8_t numCh = alac_dsi[9];
+                        /*
+                        * Build the AudioSpecificConfig from the ADTS header.
+                        *
+                        * profile:
+                        *   ADTS profile is object_type - 1.
+                        *
+                        * sampling_frequency_index:
+                        *   header[2] bits 5..2.
+                        *
+                        * channel_configuration:
+                        *   header[2] bits 1..0 + header[3] bit 7.
+                        */
+                        unsigned int profile =
+                            ((unsigned int)(header[2] & 0xC0) >> 6) + 1;
 
-                        if ((bitDepth != 16 && bitDepth != 24) || numCh == 0 || numCh > 8) {
-                                k_log("Unsupported ALAC bit depth or channel count");
-                                set_error_message("The current or next file uses an unsupported ALAC format.");
+                        unsigned int sampleRateIndex =
+                            (unsigned int)((header[2] & 0x3C) >> 2);
+
+                        unsigned int channelConfiguration =
+                            ((unsigned int)(header[2] & 0x01) << 2) |
+                            ((unsigned int)(header[3] & 0xC0) >> 6);
+
+                        /*
+                        * The above expression deserves special attention:
+                        *
+                        * ADTS channel_configuration is:
+                        *
+                        *   header[2] bit 0
+                        *   header[3] bits 7..6
+                        *
+                        * Therefore:
+                        */
+                        channelConfiguration =
+                            ((unsigned int)(header[2] & 0x01) << 2) |
+                            ((unsigned int)(header[3] & 0xC0) >> 6);
+
+                        /*
+                        * FAAD2 AudioSpecificConfig is two bytes for the normal AAC-LC
+                        * configurations handled here.
+                        */
+                        unsigned char decoder_config[2];
+
+                        decoder_config[0] =
+                            (unsigned char)((profile << 3) |
+                                            ((sampleRateIndex & 0x0E) >> 1));
+
+                        decoder_config[1] =
+                            (unsigned char)(((sampleRateIndex & 0x01) << 7) |
+                                            (channelConfiguration << 3));
+
+                        /*
+                        * Only AAC-LC is supported by the current implementation.
+                        *
+                        * In ADTS the profile field is object_type - 1.
+                        * AAC LC therefore has profile == 2.
+                        */
+                        if (profile != 2) {
+                                k_log("Unsupported ADTS AAC profile: %u\n", profile);
+                                set_error_message(
+                                    "The current or next file uses an unsupported AAC profile.");
+                                fclose(fp);
+                                pM4a->file = NULL;
                                 return MA_ERROR;
                         }
 
-                        pM4a->alac = alac_create(bitDepth, numCh);
-                        if (!pM4a->alac) {
-                                k_log("Failed to create ALAC decoder");
+                        /*
+                        * The channel configuration must be non-zero.
+                        *
+                        * Configuration 0 means that a Program Config Element supplies
+                        * the channel configuration, which this initialization path does
+                        * not currently parse.
+                        */
+                        if (channelConfiguration == 0) {
+                                k_log("Unsupported ADTS channel configuration 0\n");
+                                set_error_message(
+                                    "The current or next file uses an unsupported AAC channel configuration.");
+                                fclose(fp);
+                                pM4a->file = NULL;
                                 return MA_ERROR;
                         }
 
-                        // alac_set_info() expects 24 bytes of skipped header junk
-                        // followed by the real config -- the junk content is never read.
-                        unsigned char cookie[24 + 64];
-                        memset(cookie, 0, sizeof(cookie));
-                        size_t copySize = alac_dsi_size > 64 ? 64 : alac_dsi_size;
-                        memcpy(cookie + 24, alac_dsi, copySize);
-                        alac_set_info(pM4a->alac, (char *)cookie);
-
-                        pM4a->sample_rate = pM4a->alac->setinfo_8a_rate;
-                        pM4a->channels = pM4a->alac->setinfo_7f;
-
-                        if (pM4a->format == ma_format_s16) {
-                                pM4a->sampleSize = sizeof(int16_t);
-                                pM4a->bit_depth = 16;
-                        } else {
-                                pM4a->sampleSize = sizeof(float);
-                                pM4a->bit_depth = 32;
-                        }
-
-                        pM4a->alacScratchSize = (size_t)pM4a->alac->setinfo_max_samples_per_frame *
-                                                pM4a->alac->bytespersample;
-                        pM4a->alacScratch = malloc(pM4a->alacScratchSize);
-                        if (!pM4a->alacScratch) {
-                                alac_free(pM4a->alac);
+                        /*
+                        * Initialize FAAD2.
+                        */
+                        pM4a->hDecoder = NeAACDecOpen();
+                        if (pM4a->hDecoder == NULL) {
+                                fclose(fp);
+                                pM4a->file = NULL;
                                 return MA_OUT_OF_MEMORY;
                         }
 
-                        pM4a->leftoverSampleCount = 0;
-                        pM4a->cursor = 0;
+                        unsigned long sample_rate = 0;
+                        unsigned char channels = 0;
 
-                        return MA_SUCCESS;
-                } else // AAC
-                {
-                        pM4a->file_type = k_aac;
+                        int initResult =
+                            NeAACDecInit2(
+                                pM4a->hDecoder,
+                                decoder_config,
+                                sizeof(decoder_config),
+                                &sample_rate,
+                                &channels);
 
-                        fseek(pM4a->file, original_position, SEEK_SET);
+                        if (initResult < 0) {
+                                k_log("Error initializing decoder. Code: %d\n", initResult);
+                                set_error_message(
+                                    "Error initializing decoder in the current or next file.");
 
-                        // Initialize faad2 decoder
-                        pM4a->hDecoder = NeAACDecOpen();
+                                NeAACDecClose(pM4a->hDecoder);
+                                pM4a->hDecoder = NULL;
 
-                        // Extract the decoder configuration
-                        uint8_t *decoder_config = NULL;
-                        unsigned int decoder_config_len = 0;
+                                fclose(fp);
+                                pM4a->file = NULL;
 
-                        if (mp4_demux_get_track_audio_specific_config(
-                                pM4a->mp4,
-                                pM4a->track.id,
-                                &decoder_config,
-                                &decoder_config_len) != 0) {
-                                k_log("Unsupported codec");
-                                set_error_message("The current or next file uses an unsupported codec.");
                                 return MA_ERROR;
                         }
 
-                        unsigned long sample_rate;
-                        unsigned char channels;
+                        if (sample_rate == 0 || channels == 0) {
+                                k_log("Invalid sample rate or channel count.\n");
+                                set_error_message(
+                                    "The current or next file contains an invalid sample rate or channel count.");
 
-                        if (decoder_config_len >= 2) {
-                                uint8_t object_type = (decoder_config[0] >> 3) & 0x1F;
-
-                                if (object_type == 5 || object_type == 29) {
-                                        k_log("Unsupported AAC object type: (HE-AAC or PS)");
-                                        set_error_message("The current or next file uses an unsupported AAC object type: (HE-AAC or PS).");
-                                        return MA_ERROR;
-                                }
-                        }
-
-                        if (NeAACDecInit2(pM4a->hDecoder, (unsigned char *)decoder_config, decoder_config_len, &sample_rate, &channels) < 0) {
-                                // Error initializing decoder
                                 NeAACDecClose(pM4a->hDecoder);
-                                mp4_demux_close(pM4a->mp4);
+                                pM4a->hDecoder = NULL;
+
                                 fclose(fp);
+                                pM4a->file = NULL;
+
                                 return MA_ERROR;
                         }
 
                         pM4a->sample_rate = (ma_uint32)sample_rate;
                         pM4a->channels = (ma_uint32)channels;
 
-                        // Configure output format
-                        NeAACDecConfigurationPtr config_ptr = NeAACDecGetCurrentConfiguration(pM4a->hDecoder);
+                        /*
+                        * Configure FAAD2 output.
+                        */
+                        NeAACDecConfigurationPtr config_ptr =
+                            NeAACDecGetCurrentConfiguration(pM4a->hDecoder);
+
+                        if (config_ptr == NULL) {
+                                NeAACDecClose(pM4a->hDecoder);
+                                pM4a->hDecoder = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_ERROR;
+                        }
+
                         if (pM4a->format == ma_format_s16) {
                                 config_ptr->outputFormat = FAAD_FMT_16BIT;
                                 pM4a->sampleSize = sizeof(int16_t);
@@ -921,22 +892,580 @@ MA_API ma_result m4a_decoder_init_file(
                                 pM4a->sampleSize = sizeof(float);
                                 pM4a->bit_depth = 32;
                         } else {
-                                // Unsupported format
                                 NeAACDecClose(pM4a->hDecoder);
-                                mp4_demux_close(pM4a->mp4);
+                                pM4a->hDecoder = NULL;
+
                                 fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_FORMAT_NOT_SUPPORTED;
+                        }
+
+                        if (!NeAACDecSetConfiguration(pM4a->hDecoder, config_ptr)) {
+                                NeAACDecClose(pM4a->hDecoder);
+                                pM4a->hDecoder = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
                                 return MA_ERROR;
                         }
-                        NeAACDecSetConfiguration(pM4a->hDecoder, config_ptr);
 
-                        // Initialize other fields
+                        /*
+                        * We only consumed the 7-byte detection header. Return to the
+                        * beginning so read_pcm_frames() sees the first ADTS frame.
+                        */
+                        if (fseeko(fp, 0, SEEK_SET) != 0) {
+                                NeAACDecClose(pM4a->hDecoder);
+                                pM4a->hDecoder = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_ERROR;
+                        }
+
                         pM4a->leftoverSampleCount = 0;
                         pM4a->cursor = 0;
-                        fseek(pM4a->file, 0, SEEK_SET);
+
+                        ma_result index_result = build_adts_index(pM4a);
+                        if (index_result != MA_SUCCESS) {
+                                m4a_decoder_uninit(pM4a, NULL);
+                                return index_result;
+                        }
 
                         return MA_SUCCESS;
                 }
         }
+        /*
+        * Not ADTS. Try opening it as an MP4/M4A container.
+        */
+        if (mp4_demux_open(pFilePath, &pM4a->mp4) < 0) {
+                fclose(fp);
+                pM4a->file = NULL;
+
+                k_log("Error initializing decoder.\n");
+                set_error_message(
+                    "Error reading the MP4 container in the current or next file.");
+
+                return MA_ERROR;
+        }
+
+        /*
+     * Find the first audio track.
+     */
+        int trackCount = mp4_demux_get_track_count(pM4a->mp4);
+        if (trackCount <= 0) {
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        pM4a->audio_track_index = -1;
+
+        for (int i = 0; i < trackCount; ++i) {
+                struct mp4_track_info info;
+
+                if (mp4_demux_get_track_info(pM4a->mp4, i, &info) < 0) {
+                        continue;
+                }
+
+                if (info.type != MP4_TRACK_TYPE_AUDIO) {
+                        continue;
+                }
+
+                if (info.sample_max_size == 0 || info.sample_count == 0) {
+                        continue;
+                }
+
+                pM4a->audio_track_index = i;
+                pM4a->audio_track_id = info.id;
+                pM4a->track = info;
+
+                /* The ALAC bit reader can look ahead beyond the encoded
+                 * packet. Keep a small zero-filled guard at the end. */
+                size_t allocation_size = info.sample_max_size;
+                if (allocation_size > SIZE_MAX - 3) {
+                        mp4_demux_close(pM4a->mp4);
+                        pM4a->mp4 = NULL;
+                        fclose(fp);
+                        pM4a->file = NULL;
+                        return MA_OUT_OF_MEMORY;
+                }
+                pM4a->buffer = calloc(allocation_size + 3, 1);
+                if (pM4a->buffer == NULL) {
+                        mp4_demux_close(pM4a->mp4);
+                        pM4a->mp4 = NULL;
+
+                        fclose(fp);
+                        pM4a->file = NULL;
+
+                        return MA_OUT_OF_MEMORY;
+                }
+
+                pM4a->buffer_size = info.sample_max_size;
+
+                break;
+        }
+
+        if (pM4a->audio_track_index == -1) {
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        pM4a->current_sample = 0;
+        pM4a->total_samples = pM4a->track.sample_count;
+        struct mp4_track_sample first_sample;
+        if (mp4_demux_get_track_sample(pM4a->mp4, pM4a->audio_track_id,
+                                       0, NULL, 0, NULL, 0,
+                                       &first_sample) < 0 ||
+            first_sample.size == 0 || pM4a->track.timescale == 0) {
+                m4a_decoder_uninit(pM4a, NULL);
+                return MA_ERROR;
+        }
+        pM4a->start_dts = first_sample.dts;
+
+        /*
+     * Calculate average bitrate from container duration.
+     */
+        uint64_t duration_us = 0;
+        if (mp4_rescale_time(pM4a->track.duration,
+                             pM4a->track.timescale,
+                             1000000,
+                             &duration_us) < 0) {
+                m4a_decoder_uninit(pM4a, NULL);
+                return MA_ERROR;
+        }
+
+        if (duration_us > 0 && pM4a->file_size > 0) {
+                uint64_t bps =
+                    ((uint64_t)pM4a->file_size * 8ULL * 1000000ULL) /
+                    duration_us;
+
+                pM4a->avg_bit_rate = (ma_uint32)((bps + 500ULL) / 1000ULL);
+        }
+
+        /*
+     * Determine whether the audio track is ALAC.
+     */
+        {
+                uint8_t alac_dsi[32];
+                size_t alac_dsi_size = 0;
+
+                if (fseeko(fp, 0, SEEK_SET) != 0) {
+                        free(pM4a->buffer);
+                        pM4a->buffer = NULL;
+                        pM4a->buffer_size = 0;
+
+                        mp4_demux_close(pM4a->mp4);
+                        pM4a->mp4 = NULL;
+
+                        fclose(fp);
+                        pM4a->file = NULL;
+
+                        return MA_ERROR;
+                }
+
+                if (is_alac(fp, alac_dsi, &alac_dsi_size)) {
+                        pM4a->file_type = k_ALAC;
+
+                        if (alac_dsi_size < 24) {
+                                k_log("ALAC config too short.");
+
+                                free(pM4a->buffer);
+                                pM4a->buffer = NULL;
+                                pM4a->buffer_size = 0;
+
+                                mp4_demux_close(pM4a->mp4);
+                                pM4a->mp4 = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_ERROR;
+                        }
+
+                        uint8_t bitDepth = alac_dsi[5];
+                        uint8_t numCh = alac_dsi[9];
+
+                        if ((bitDepth != 16 && bitDepth != 24) ||
+                            numCh == 0 ||
+                            numCh > 8) {
+
+                                k_log("Unsupported ALAC bit depth or channel count.");
+                                set_error_message(
+                                    "The current or next file uses an unsupported ALAC format.");
+
+                                free(pM4a->buffer);
+                                pM4a->buffer = NULL;
+                                pM4a->buffer_size = 0;
+
+                                mp4_demux_close(pM4a->mp4);
+                                pM4a->mp4 = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_ERROR;
+                        }
+
+                        pM4a->alac = alac_create(bitDepth, numCh);
+                        if (pM4a->alac == NULL) {
+                                k_log("Failed to create ALAC decoder.");
+
+                                free(pM4a->buffer);
+                                pM4a->buffer = NULL;
+                                pM4a->buffer_size = 0;
+
+                                mp4_demux_close(pM4a->mp4);
+                                pM4a->mp4 = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_OUT_OF_MEMORY;
+                        }
+
+                        /*
+             * alac_set_info() expects 24 bytes of leading data before the
+             * actual ALAC configuration.
+             */
+                        unsigned char cookie[24 + 64];
+                        memset(cookie, 0, sizeof(cookie));
+
+                        size_t copySize =
+                            alac_dsi_size < 64 ? alac_dsi_size : 64;
+
+                        memcpy(cookie + 24, alac_dsi, copySize);
+
+                        alac_set_info(pM4a->alac, (char *)cookie);
+
+                        pM4a->sample_rate =
+                            pM4a->alac->setinfo_8a_rate;
+
+                        pM4a->channels =
+                            pM4a->alac->setinfo_7f;
+
+                        if (pM4a->sample_rate == 0 ||
+                            pM4a->channels == 0 ||
+                            pM4a->channels > 8) {
+
+                                k_log("Invalid ALAC sample rate or channel count.");
+
+                                alac_free(pM4a->alac);
+                                pM4a->alac = NULL;
+
+                                free(pM4a->buffer);
+                                pM4a->buffer = NULL;
+                                pM4a->buffer_size = 0;
+
+                                mp4_demux_close(pM4a->mp4);
+                                pM4a->mp4 = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_ERROR;
+                        }
+
+                        if (pM4a->format == ma_format_s16) {
+                                pM4a->sampleSize = sizeof(int16_t);
+                                pM4a->bit_depth = 16;
+                        } else if (pM4a->format == ma_format_f32) {
+                                pM4a->sampleSize = sizeof(float);
+                                pM4a->bit_depth = 32;
+                        } else {
+                                alac_free(pM4a->alac);
+                                pM4a->alac = NULL;
+
+                                free(pM4a->buffer);
+                                pM4a->buffer = NULL;
+                                pM4a->buffer_size = 0;
+
+                                mp4_demux_close(pM4a->mp4);
+                                pM4a->mp4 = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_FORMAT_NOT_SUPPORTED;
+                        }
+
+                        /*
+             * The ALAC decoder produces its native PCM representation into
+             * this scratch buffer. bytespersample is the number of bytes
+             * per interleaved sample.
+             */
+                        pM4a->alacScratchSize =
+                            (size_t)pM4a->alac->setinfo_max_samples_per_frame *
+                            (size_t)pM4a->alac->bytespersample;
+
+                        if (pM4a->alacScratchSize == 0) {
+                                alac_free(pM4a->alac);
+                                pM4a->alac = NULL;
+
+                                free(pM4a->buffer);
+                                pM4a->buffer = NULL;
+                                pM4a->buffer_size = 0;
+
+                                mp4_demux_close(pM4a->mp4);
+                                pM4a->mp4 = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_ERROR;
+                        }
+
+                        pM4a->alacScratch = malloc(pM4a->alacScratchSize);
+                        if (pM4a->alacScratch == NULL) {
+                                alac_free(pM4a->alac);
+                                pM4a->alac = NULL;
+
+                                free(pM4a->buffer);
+                                pM4a->buffer = NULL;
+                                pM4a->buffer_size = 0;
+
+                                mp4_demux_close(pM4a->mp4);
+                                pM4a->mp4 = NULL;
+
+                                fclose(fp);
+                                pM4a->file = NULL;
+
+                                return MA_OUT_OF_MEMORY;
+                        }
+
+                        pM4a->leftoverSampleCount = 0;
+                        pM4a->cursor = 0;
+
+                        return MA_SUCCESS;
+                }
+        }
+
+        /*
+     * Otherwise the track is AAC.
+     */
+        pM4a->file_type = k_aac;
+
+        pM4a->hDecoder = NeAACDecOpen();
+        if (pM4a->hDecoder == NULL) {
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_OUT_OF_MEMORY;
+        }
+
+        uint8_t *decoder_config = NULL;
+        unsigned int decoder_config_len = 0;
+
+        if (mp4_demux_get_track_audio_specific_config(
+                pM4a->mp4,
+                pM4a->track.id,
+                &decoder_config,
+                &decoder_config_len) != 0 ||
+            decoder_config == NULL ||
+            decoder_config_len < 2) {
+
+                k_log("Unsupported codec.");
+                set_error_message(
+                    "The current or next file uses an unsupported codec.");
+
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        /*
+     * AudioSpecificConfig object type.
+     *
+     * This handles the normal two-byte AAC configuration. Extended object
+     * types require additional parsing and are deliberately rejected.
+     */
+        uint8_t object_type =
+            (uint8_t)((decoder_config[0] >> 3) & 0x1F);
+
+        if (object_type == 5 || object_type == 29) {
+                k_log("Unsupported AAC object type: %u\n", object_type);
+                set_error_message(
+                    "The current or next file uses an unsupported AAC object type "
+                    "(HE-AAC or PS).");
+
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        unsigned long sample_rate = 0;
+        unsigned char channels = 0;
+
+        if (NeAACDecInit2(
+                pM4a->hDecoder,
+                decoder_config,
+                decoder_config_len,
+                &sample_rate,
+                &channels) < 0) {
+
+                k_log("Error initializing AAC decoder.");
+                set_error_message(
+                    "Error initializing decoder in the current or next file.");
+
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        if (sample_rate == 0 || channels == 0) {
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        pM4a->sample_rate = (ma_uint32)sample_rate;
+        pM4a->channels = (ma_uint32)channels;
+
+        NeAACDecConfigurationPtr config_ptr =
+            NeAACDecGetCurrentConfiguration(pM4a->hDecoder);
+
+        if (config_ptr == NULL) {
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        if (pM4a->format == ma_format_s16) {
+                config_ptr->outputFormat = FAAD_FMT_16BIT;
+                pM4a->sampleSize = sizeof(int16_t);
+                pM4a->bit_depth = 16;
+        } else if (pM4a->format == ma_format_f32) {
+                config_ptr->outputFormat = FAAD_FMT_FLOAT;
+                pM4a->sampleSize = sizeof(float);
+                pM4a->bit_depth = 32;
+        } else {
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_FORMAT_NOT_SUPPORTED;
+        }
+
+        if (!NeAACDecSetConfiguration(pM4a->hDecoder, config_ptr)) {
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        pM4a->leftoverSampleCount = 0;
+        pM4a->cursor = 0;
+
+        if (fseeko(fp, 0, SEEK_SET) != 0) {
+                NeAACDecClose(pM4a->hDecoder);
+                pM4a->hDecoder = NULL;
+
+                free(pM4a->buffer);
+                pM4a->buffer = NULL;
+                pM4a->buffer_size = 0;
+
+                mp4_demux_close(pM4a->mp4);
+                pM4a->mp4 = NULL;
+
+                fclose(fp);
+                pM4a->file = NULL;
+
+                return MA_ERROR;
+        }
+
+        return MA_SUCCESS;
 }
 
 MA_API void m4a_decoder_uninit(m4a_decoder *pM4a, const ma_allocation_callbacks *p_allocation_callbacks)
@@ -972,6 +1501,13 @@ MA_API void m4a_decoder_uninit(m4a_decoder *pM4a, const ma_allocation_callbacks 
                 pM4a->buffer = NULL;
                 pM4a->buffer_size = 0;
         }
+
+        free(pM4a->adts_frame_offsets);
+        pM4a->adts_frame_offsets = NULL;
+        free(pM4a->adts_pcm_offsets);
+        pM4a->adts_pcm_offsets = NULL;
+        pM4a->adts_frame_count = 0;
+        pM4a->adts_total_pcm_frames = 0;
 
         if (pM4a->file) {
                 fclose(pM4a->file);
@@ -1048,86 +1584,306 @@ MA_API ma_result m4a_decoder_read_pcm_frames(
 
         while (totalFramesProcessed < frame_count) {
                 if (pM4a->file_type == k_rawAAC) {
-                        unsigned int headerSize = 7;
-                        uint8_t buffer[headerSize];
+                        /*
+                        * ADTS frames have either a 7-byte header or a 9-byte header when
+                        * CRC protection is present.
+                        *
+                        * We need at least 7 bytes to determine the frame length and whether
+                        * the CRC field is present.
+                        */
+                        uint8_t adts_header[7];
 
-                        if (fread(buffer, 1, headerSize, pM4a->file) != headerSize) {
+                        size_t header_bytes_read = fread(
+                            adts_header,
+                            1,
+                            sizeof(adts_header),
+                            pM4a->file);
+
+                        if (header_bytes_read == 0) {
+                                /*
+                                * Clean EOF.
+                                */
+                                result = MA_AT_END;
+                                break;
+                        }
+
+                        if (header_bytes_read != sizeof(adts_header)) {
+                                /*
+                                * A partial ADTS header means a truncated/corrupt file.
+                                */
                                 result = MA_ERROR;
                                 break;
                         }
 
-                        unsigned int frame_bytes = ((buffer[3] & 0x03) << 11) | ((buffer[4] & 0xFF) << 3) | ((buffer[5] & 0xE0) >> 5);
+                        /*
+                        * Validate the ADTS sync word.
+                        *
+                        * syncword = 0xFFF (12 bits)
+                        */
+                        if (adts_header[0] != 0xFF ||
+                            (adts_header[1] & 0xF0) != 0xF0) {
 
-                        if (frame_bytes < headerSize || frame_bytes > 8192) {
                                 result = MA_ERROR;
                                 break;
                         }
 
-                        // Allocate memory for the frame
-                        unsigned char *sample_data = (unsigned char *)malloc(frame_bytes);
-                        if (!sample_data) {
-                                result = MA_OUT_OF_MEMORY;
+                        /*
+                        * This decoder expects MPEG-4 AAC, not MPEG-2 AAC.
+                        *
+                        * ID:
+                        *   0 = MPEG-4
+                        *   1 = MPEG-2
+                        *
+                        * If your application intentionally supports MPEG-2 ADTS as well,
+                        * this check can be removed.
+                        */
+                        if ((adts_header[1] & 0x08) != 0) {
+                                result = MA_ERROR;
                                 break;
                         }
 
-                        // Copy the header to the sample_data buffer
-                        memcpy(sample_data, buffer, headerSize);
+                        /*
+                        * protection_absent:
+                        *
+                        *   1 = no CRC, 7-byte header
+                        *   0 = CRC present, 9-byte header
+                        */
+                        size_t adts_header_size =
+                            (adts_header[1] & 0x01) != 0 ? 7u : 9u;
 
-                        // Read the rest of the frame (audio data)
-                        size_t remaining_bytes = frame_bytes - headerSize;
-                        size_t additionalBytesRead = fread(sample_data + headerSize, 1, remaining_bytes, pM4a->file);
+                        /*
+                        * AAC frame length is a 13-bit field:
+                        *
+                        *   adts_header[3] bits 1..0
+                        *   adts_header[4] bits 7..0
+                        *   adts_header[5] bits 7..5
+                        *
+                        * It includes the ADTS header itself.
+                        */
+                        size_t frame_size =
+                            ((size_t)(adts_header[3] & 0x03) << 11) |
+                            ((size_t)adts_header[4] << 3) |
+                            ((size_t)(adts_header[5] & 0xE0) >> 5);
 
-                        if (additionalBytesRead < remaining_bytes) {
-                                free(sample_data);
+                        /*
+                        * Validate the frame size before doing any arithmetic based on it.
+                        */
+                        if (frame_size < adts_header_size) {
                                 result = MA_ERROR;
-                                break; // Failed to read full frame
+                                break;
                         }
+
+                        /*
+                        * The ADTS frame length is 13 bits, so the theoretical maximum is
+                        * 8191 bytes.
+                        *
+                        * Keep the explicit upper bound as a sanity check.
+                        */
+                        if (frame_size > 8191) {
+                                result = MA_ERROR;
+                                break;
+                        }
+
+                        /*
+                        * payload_size is the number of bytes passed to FAAD2.
+                        *
+                        * This is the variable you were asking about earlier.
+                        */
+                        size_t payload_size = frame_size - adts_header_size;
+
+                        /*
+                        * An empty AAC payload isn't a valid decodable frame.
+                        */
+                        if (payload_size == 0) {
+                                result = MA_ERROR;
+                                break;
+                        }
+
+                        /*
+                        * We need storage for the complete ADTS frame because the existing
+                        * decoder buffer is used for the encoded AAC data.
+                        *
+                        * If pM4a->buffer is not guaranteed to exist for raw AAC, allocate
+                        * it here.
+                        */
+                        if (pM4a->buffer == NULL || pM4a->buffer_size < frame_size) {
+                                void *new_buffer = realloc(pM4a->buffer, frame_size);
+
+                                if (new_buffer == NULL) {
+                                        result = MA_OUT_OF_MEMORY;
+                                        break;
+                                }
+
+                                pM4a->buffer = new_buffer;
+                                pM4a->buffer_size = frame_size;
+                        }
+
+                        /*
+                        * We already consumed the first 7 bytes of the header.
+                        */
+                        memcpy(pM4a->buffer, adts_header, sizeof(adts_header));
+
+                        /*
+                        * If CRC protection is present, read the additional two header bytes.
+                        */
+                        if (adts_header_size == 9) {
+                                size_t crc_bytes_read =
+                                    fread(
+                                        (uint8_t *)pM4a->buffer + 7,
+                                        1,
+                                        2,
+                                        pM4a->file);
+
+                                if (crc_bytes_read != 2) {
+                                        result = MA_ERROR;
+                                        break;
+                                }
+                        }
+
+                        /*
+                        * Read the AAC payload.
+                        */
+                        size_t payload_bytes_read =
+                            fread(
+                                (uint8_t *)pM4a->buffer + adts_header_size,
+                                1,
+                                payload_size,
+                                pM4a->file);
+
+                        if (payload_bytes_read != payload_size) {
+                                /*
+                                * The file ended in the middle of an ADTS frame.
+                                */
+                                result = MA_ERROR;
+                                break;
+                        }
+
+                        /*
+                        * Decode only the AAC payload.
+                        *
+                        * Do NOT pass the ADTS header to NeAACDecDecode().
+                        */
+                        void *decodedData =
+                            NeAACDecDecode(
+                                pM4a->hDecoder,
+                                &pM4a->frameInfo,
+                                (uint8_t *)pM4a->buffer + adts_header_size,
+                                (unsigned long)payload_size);
 
                         pM4a->current_sample++;
 
-                        // Decode the AAC frame using faad2
-                        void *decodedData = NeAACDecDecode(pM4a->hDecoder, &(pM4a->frameInfo), sample_data + 7, frame_bytes - 7);
-                        free(sample_data);
+                        if (pM4a->frameInfo.error != 0) {
+                                k_log(
+                                    "ADTS AAC decoding error %d: %s\n",
+                                    pM4a->frameInfo.error,
+                                    NeAACDecGetErrorMessage(pM4a->frameInfo.error));
 
-                        if (pM4a->frameInfo.error > 0) {
-                                // Error in decoding, skip to the next frame.
+                                /*
+                                * Do not return success just because an invalid frame was consumed.
+                                * Continue trying subsequent ADTS frames.
+                                */
                                 continue;
                         }
 
-                        // Remove support for HE-AAC components (SBR or PS)
-                        if (pM4a->frameInfo.sbr || pM4a->frameInfo.ps) {
-                                // File is encoded with HE-AAC which is not supported
-                                return MA_ERROR;
+                        if (decodedData == NULL || pM4a->frameInfo.samples == 0) {
+                                /*
+                                * FAAD2 produced no PCM.
+                                */
+                                continue;
                         }
 
-                        unsigned long samplesDecoded = pM4a->frameInfo.samples; // Total samples decoded (channels * frames)
-                        ma_uint64 framesDecoded = samplesDecoded / channels;
+                        /*
+                        * HE-AAC/SBR/PS are intentionally unsupported by this decoder.
+                        */
+                        if (pM4a->frameInfo.sbr || pM4a->frameInfo.ps) {
+                                k_log("HE-AAC/SBR/PS is not supported.\n");
+                                set_error_message(
+                                    "The current or next file is encoded with HE-AAC which is not supported.");
 
-                        // Calculate how many frames we can process in this call
-                        ma_uint64 framesNeeded = frame_count - totalFramesProcessed;
-                        ma_uint64 frames_to_copy = (framesDecoded < framesNeeded) ? framesDecoded : framesNeeded;
-                        ma_uint64 bytesToCopy = frames_to_copy * channels * sampleSize;
+                                result = MA_ERROR;
+                                break;
+                        }
 
-                        memcpy((uint8_t *)p_frames_out + totalFramesProcessed * channels * sampleSize, decodedData, bytesToCopy);
-                        totalFramesProcessed += frames_to_copy;
+                        /*
+                        * FAAD2 reports samples across all channels.
+                        *
+                        * Example:
+                        *
+                        *   1024 samples * 2 channels = 2048
+                        *
+                        * Therefore:
+                        *
+                        *   frames = samples / channels
+                        */
+                        ma_uint64 framesDecoded =
+                            (ma_uint64)pM4a->frameInfo.samples / pM4a->channels;
 
-                        // Handle leftover frames using the global/static leftover buffer
-                        if (frames_to_copy < framesDecoded) {
-                                // There are leftover frames
-                                pM4a->leftoverSampleCount = framesDecoded - frames_to_copy;
-                                ma_uint64 leftoverBytes = pM4a->leftoverSampleCount * channels * sampleSize;
+                        if (framesDecoded == 0) {
+                                continue;
+                        }
 
-                                if (leftoverBytes > sizeof(pM4a->leftoverBuffer)) {
-                                        // Safety check to avoid overflow in the buffer.
-                                        pM4a->leftoverSampleCount = sizeof(pM4a->leftoverBuffer) / (channels * sampleSize);
-                                        leftoverBytes = pM4a->leftoverSampleCount * channels * sampleSize;
+                        ma_uint64 framesNeeded =
+                            frame_count - totalFramesProcessed;
+
+                        ma_uint64 framesToCopy =
+                            framesDecoded < framesNeeded
+                                ? framesDecoded
+                                : framesNeeded;
+
+                        ma_uint64 bytesToCopy =
+                            framesToCopy *
+                            (ma_uint64)pM4a->channels *
+                            (ma_uint64)pM4a->sampleSize;
+
+                        memcpy(
+                            (uint8_t *)p_frames_out +
+                                totalFramesProcessed *
+                                    (ma_uint64)pM4a->channels *
+                                    (ma_uint64)pM4a->sampleSize,
+                            decodedData,
+                            (size_t)bytesToCopy);
+
+                        totalFramesProcessed += framesToCopy;
+
+                        /*
+                        * If FAAD2 decoded more frames than the caller requested, retain the
+                        * remaining frames for the next read_pcm_frames() call.
+                        */
+                        if (framesToCopy < framesDecoded) {
+                                ma_uint64 leftoverFrames =
+                                    framesDecoded - framesToCopy;
+
+                                ma_uint64 leftoverBytes =
+                                    leftoverFrames *
+                                    (ma_uint64)pM4a->channels *
+                                    (ma_uint64)pM4a->sampleSize;
+
+                                ma_uint64 maxLeftoverBytes =
+                                    sizeof(pM4a->leftoverBuffer);
+
+                                if (leftoverBytes > maxLeftoverBytes) {
+                                        leftoverBytes = maxLeftoverBytes;
+
+                                        leftoverFrames =
+                                            leftoverBytes /
+                                            ((ma_uint64)pM4a->channels *
+                                             (ma_uint64)pM4a->sampleSize);
+
+                                        leftoverBytes =
+                                            leftoverFrames *
+                                            (ma_uint64)pM4a->channels *
+                                            (ma_uint64)pM4a->sampleSize;
                                 }
 
-                                memcpy(pM4a->leftoverBuffer, (uint8_t *)decodedData + bytesToCopy, leftoverBytes);
+                                memcpy(
+                                    pM4a->leftoverBuffer,
+                                    (uint8_t *)decodedData + bytesToCopy,
+                                    (size_t)leftoverBytes);
+
+                                pM4a->leftoverSampleCount = leftoverFrames;
                         } else {
                                 pM4a->leftoverSampleCount = 0;
                         }
-
                 } else if (pM4a->file_type == k_ALAC) {
                         if (pM4a->current_sample >= pM4a->total_samples) {
                                 result = MA_AT_END;
@@ -1136,7 +1892,7 @@ MA_API ma_result m4a_decoder_read_pcm_frames(
 
                         struct mp4_track_sample sample;
                         int ret = mp4_demux_get_track_sample(
-                            pM4a->mp4, pM4a->audio_track_id, pM4a->current_sample,
+                            pM4a->mp4, pM4a->audio_track_id, 1,
                             pM4a->buffer, pM4a->buffer_size, NULL, 0, &sample);
 
                         if (ret < 0) {
@@ -1147,6 +1903,7 @@ MA_API ma_result m4a_decoder_read_pcm_frames(
                         pM4a->current_sample++;
 
                         int outSize = (int)pM4a->alacScratchSize;
+                        memset(pM4a->buffer + sample.size, 0, 3);
                         alac_decode_frame(pM4a->alac, pM4a->buffer, pM4a->alacScratch, &outSize);
 
                         if (outSize <= 0) {
@@ -1212,7 +1969,7 @@ MA_API ma_result m4a_decoder_read_pcm_frames(
                             mp4_demux_get_track_sample(
                                 pM4a->mp4,
                                 pM4a->audio_track_id,
-                                pM4a->current_sample,
+                                1,
                                 pM4a->buffer,
                                 pM4a->buffer_size,
                                 NULL,
@@ -1285,8 +2042,9 @@ MA_API ma_result m4a_decoder_read_pcm_frames(
                 *p_frames_read = totalFramesProcessed;
         }
 
-        if (totalFramesProcessed > 0 && result != MA_AT_END)
+        if (totalFramesProcessed > 0) {
                 return MA_SUCCESS;
+        }
 
         return result;
 }
@@ -1295,110 +2053,105 @@ MA_API ma_result m4a_decoder_seek_to_pcm_frame(m4a_decoder *pM4a, ma_uint64 fram
 {
         if (pM4a == NULL)
                 return MA_INVALID_ARGS;
+        if (pM4a->sample_rate == 0)
+                return MA_ERROR;
+
+        ma_uint64 length;
+        if (m4a_decoder_get_length_in_pcm_frames(pM4a, &length) != MA_SUCCESS ||
+            frame_index >= length)
+                return MA_INVALID_ARGS;
 
         if (pM4a->file_type == k_rawAAC) {
-                return MA_ERROR;
-        } else if (pM4a->file_type == k_ALAC) {
+                if (pM4a->adts_frame_count == 0)
+                        return MA_INVALID_OPERATION;
 
-                ma_uint32 samplesPerFrame = pM4a->alac->setinfo_max_samples_per_frame;
+                uint32_t low = 0, high = pM4a->adts_frame_count;
+                while (low < high) {
+                        uint32_t mid = low + (high - low) / 2;
+                        if (pM4a->adts_pcm_offsets[mid] <= frame_index)
+                                low = mid + 1;
+                        else
+                                high = mid;
+                }
 
-                if (frame_index >= (ma_uint64)pM4a->total_samples * samplesPerFrame)
-                        return MA_INVALID_ARGS;
+                uint32_t index = low ? low - 1 : 0;
 
-                pM4a->current_sample = (ma_uint32)(frame_index / samplesPerFrame);
-
-                uint64_t time_us =
-                    ((uint64_t)pM4a->current_sample * samplesPerFrame * 1000000ULL) / pM4a->sample_rate;
-
-                int seek_ret = mp4_demux_seek(
-                    pM4a->mp4,
-                    time_us,
-                    MP4_SEEK_METHOD_PREVIOUS_SYNC);
-
-                if (seek_ret < 0)
+                if (pM4a->adts_frame_offsets[index] > (uint64_t)INT64_MAX ||
+                    fseeko(pM4a->file,
+                           (off_t)pM4a->adts_frame_offsets[index],
+                           SEEK_SET) != 0)
                         return MA_ERROR;
 
-                struct mp4_track_sample sample;
-                int ret = mp4_demux_get_track_sample(
-                    pM4a->mp4, pM4a->audio_track_id, pM4a->current_sample,
-                    NULL, 0, NULL, 0, &sample);
-
-                k_log("ALAC seek: frame_index=%llu target_sample=%u time_us=%llu ret=%d\n",
-                      (unsigned long long)frame_index, pM4a->current_sample,
-                      (unsigned long long)time_us, ret);
-
-                if (ret < 0)
-                        return MA_ERROR;
-
+                pM4a->current_sample = index;
+                pM4a->cursor = pM4a->adts_pcm_offsets[index];
                 pM4a->leftoverSampleCount = 0;
 
-                uint64_t actual_pcm_frame =
-                    (sample.dts * (uint64_t)pM4a->sample_rate) / pM4a->track.timescale;
-
-                pM4a->current_sample = (ma_uint32)(actual_pcm_frame / samplesPerFrame);
-                pM4a->cursor = actual_pcm_frame;
-
-                k_log("ALAC seek result: dts=%llu actual_pcm_frame=%llu final_sample=%u\n",
-                      (unsigned long long)sample.dts, (unsigned long long)actual_pcm_frame,
-                      pM4a->current_sample);
+                NeAACDecPostSeekReset(pM4a->hDecoder, (long)index);
 
                 return MA_SUCCESS;
         } else {
+                if (pM4a->track.timescale == 0)
+                        return MA_ERROR;
+                uint64_t relative_us;
+                uint64_t start_us;
+                if (mp4_rescale_time_floor(frame_index,
+                                           pM4a->sample_rate,
+                                           1000000,
+                                           &relative_us) < 0 ||
+                    mp4_rescale_time(pM4a->start_dts,
+                                     pM4a->track.timescale,
+                                     1000000,
+                                     &start_us) < 0 ||
+                    relative_us > UINT64_MAX - start_us)
+                        return MA_ERROR;
+                uint64_t time_us = relative_us + start_us;
+                if (mp4_demux_seek_track(pM4a->mp4,
+                                         pM4a->audio_track_id,
+                                         time_us,
+                                         MP4_SEEK_METHOD_PREVIOUS_SYNC) < 0)
+                        return MA_ERROR;
 
-                if (frame_index >= pM4a->total_samples * 1024)
-                        return MA_INVALID_ARGS;
-
-                pM4a->current_sample = (ma_uint32)(frame_index / 1024);
-
-                unsigned int frame_bytes = 0;
                 struct mp4_track_sample sample;
-
-                // frame_index -> PCM frame count -> microseconds
-                // time_us = frames / sample_rate * 1,000,000
-                uint64_t time_us =
-                    ((uint64_t)pM4a->current_sample * 1024ULL * 1000000ULL) / pM4a->sample_rate;
-
-                int seek_ret = mp4_demux_seek(
-                    pM4a->mp4,
-                    time_us,
-                    MP4_SEEK_METHOD_PREVIOUS_SYNC);
-
-                if (seek_ret < 0)
+                if (mp4_demux_get_track_sample(pM4a->mp4,
+                                               pM4a->audio_track_id,
+                                               0, NULL, 0, NULL, 0,
+                                               &sample) < 0 ||
+                    sample.size == 0 || sample.dts < pM4a->start_dts)
                         return MA_ERROR;
 
-                int ret =
-                    mp4_demux_get_track_sample(
-                        pM4a->mp4,
-                        pM4a->audio_track_id,
-                        pM4a->current_sample,
-                        NULL,
-                        0,
-                        NULL,
-                        0,
-                        &sample);
-
-                if (ret < 0)
+                pM4a->current_sample = sample.index;
+                uint64_t cursor;
+                if (mp4_rescale_time_floor(sample.dts - pM4a->start_dts,
+                                           pM4a->track.timescale,
+                                           pM4a->sample_rate,
+                                           &cursor) < 0)
                         return MA_ERROR;
-
-                frame_bytes = sample.size;
-                ma_int64 sample_offset = sample.offset;
-
-                if (sample_offset < 0 || frame_bytes == 0) {
-                        return MA_ERROR;
-                }
-
-                uint64_t actual_pcm_frame =
-                    (sample.dts * (uint64_t)pM4a->sample_rate) / pM4a->track.timescale;
-
-                pM4a->current_sample = (ma_uint32)(actual_pcm_frame / 1024);
-
-                NeAACDecPostSeekReset(pM4a->hDecoder, (long)pM4a->current_sample);
-
+                pM4a->cursor = cursor;
                 pM4a->leftoverSampleCount = 0;
-                pM4a->cursor = actual_pcm_frame;
-
-                return MA_SUCCESS;
+                if (pM4a->file_type != k_ALAC)
+                        NeAACDecPostSeekReset(pM4a->hDecoder,
+                                              (long)sample.index);
         }
+
+        /* Decode and discard the part of the indexed packet preceding the
+         * exact requested PCM frame. The normal read path keeps any decoded
+         * remainder in leftoverBuffer. */
+        unsigned char scratch[MAX_CHANNELS * MAX_SAMPLE_SIZE * 256];
+        size_t bytes_per_frame = pM4a->channels * pM4a->sampleSize;
+        if (bytes_per_frame == 0 || bytes_per_frame > sizeof(scratch))
+                return MA_ERROR;
+        while (pM4a->cursor < frame_index) {
+                ma_uint64 count = frame_index - pM4a->cursor;
+                ma_uint64 read = 0;
+                if (count > sizeof(scratch) / bytes_per_frame)
+                        count = sizeof(scratch) / bytes_per_frame;
+                ma_result result = m4a_decoder_read_pcm_frames(
+                    pM4a, scratch, count, &read);
+                if (read == 0 ||
+                    (result != MA_SUCCESS && result != MA_AT_END))
+                        return MA_ERROR;
+        }
+        return MA_SUCCESS;
 }
 
 MA_API ma_result m4a_decoder_get_data_format(
@@ -1477,13 +2230,25 @@ MA_API ma_result m4a_decoder_get_length_in_pcm_frames(m4a_decoder *pM4a,
                 return MA_INVALID_ARGS;
         }
 
-        if (pM4a->sample_rate == 0 || pM4a->track.timescale == 0) {
+        if (pM4a->sample_rate == 0) {
                 return MA_ERROR;
         }
 
-        *p_length =
-            ((ma_uint64)pM4a->track.duration * pM4a->sample_rate) /
-            pM4a->track.timescale;
+        if (pM4a->file_type == k_rawAAC) {
+                *p_length = pM4a->adts_total_pcm_frames;
+                return *p_length ? MA_SUCCESS : MA_ERROR;
+        }
+
+        if (pM4a->track.timescale == 0)
+                return MA_ERROR;
+
+        uint64_t length;
+        if (mp4_rescale_time_floor(pM4a->track.duration,
+                                   pM4a->track.timescale,
+                                   pM4a->sample_rate,
+                                   &length) < 0)
+                return MA_ERROR;
+        *p_length = length;
 
         return MA_SUCCESS;
 }

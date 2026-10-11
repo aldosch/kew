@@ -200,7 +200,7 @@ else ifeq ($(UNAME_S), Darwin)
   endif
 else ifneq ($(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S)),)
   LIBS += -lws2_32 -lgnurx
-  LIBS += -lwindowsapp -lruntimeobject
+  LIBS += -lwindowsapp -lruntimeobject -lole32 -loleaut32
   WIN_MANIFEST_OBJ = manifest.res
   WINDRES = windres
 endif
@@ -224,15 +224,25 @@ DEFINES += -DPREFIX_RAW=$(PREFIX)
 
 # Conditionally add faad2 support if USE_FAAD is enabled
 ifeq ($(USE_FAAD), 1)
-  ifeq ($(ARCH), arm64)
-    CFLAGS += -I/opt/homebrew/opt/faad2/include
-    LIBS += -L/opt/homebrew/opt/faad2/lib -lfaad
-  else ifeq ($(UNAME_O),Android)
-    CFLAGS += -I$(PREFIX)/include
-    LIBS += -L$(PREFIX)/lib -lfaad
-  else
-    CFLAGS += -I/usr/local/include
-    LIBS += -L/usr/local/lib -lfaad
+  ifneq ($(shell command -v $(PKG_CONFIG) 2>/dev/null),)
+    ifeq ($(shell $(PKG_CONFIG) --exists faad2 2>/dev/null && echo 1),1)
+      CFLAGS += $(shell $(PKG_CONFIG) --cflags faad2)
+      LIBS += $(shell $(PKG_CONFIG) --libs faad2)
+    else ifeq ($(UNAME_S),Darwin)
+      ifeq ($(ARCH),arm64)
+        CFLAGS += -I/opt/homebrew/opt/faad2/include
+        LIBS += -L/opt/homebrew/opt/faad2/lib -lfaad
+      else
+        CFLAGS += -I/usr/local/include
+        LIBS += -L/usr/local/lib -lfaad
+      endif
+    else ifeq ($(IS_ANDROID),1)
+      CFLAGS += -I$(PREFIX)/include
+      LIBS += -L$(PREFIX)/lib -lfaad
+    else
+      CFLAGS += -I/usr/local/include
+      LIBS += -L/usr/local/lib -lfaad
+    endif
   endif
   DEFINES += -DUSE_FAAD
 endif
@@ -317,9 +327,12 @@ LIBMP4_SRCS = \
     include/libmp4/src/mp4.c \
     include/libmp4/src/mp4_box_reader.c \
     include/libmp4/src/mp4_demux.c \
+    include/libmp4/src/mp4_fragment.c \
     include/libmp4/src/mp4_track.c
 
 LIBMP4_OBJS = $(LIBMP4_SRCS:include/libmp4/src/%.c=$(OBJDIR)/libmp4/%.o)
+
+$(OBJDIR)/sound/m4a.o: src/sound/m4a.h
 
 NESTEGG_SRCS = include/nestegg/nestegg.c
 NESTEGG_OBJS = $(NESTEGG_SRCS:include/nestegg/%.c=$(OBJDIR)/nestegg/%.o)
@@ -396,7 +409,9 @@ install: all
 	mkdir -p "$(DESTDIR)$(THEMEDIR)"
 	mkdir -p "$(DESTDIR)$(LAYOUTDIR)"
 	mkdir -p "$(DESTDIR)$(LOCALEDIR)/ja/LC_MESSAGES"
+	mkdir -p "$(DESTDIR)$(LOCALEDIR)/ru/LC_MESSAGES"
 	mkdir -p "$(DESTDIR)$(LOCALEDIR)/zh_CN/LC_MESSAGES"
+	mkdir -p "$(DESTDIR)$(LOCALEDIR)/es/LC_MESSAGES"
 	mkdir -p "$(DESTDIR)$(PREFIX)/share/applications"
 	mkdir -p "$(DESTDIR)$(PREFIX)/share/icons/hicolor/512x512/apps"
 
@@ -415,6 +430,15 @@ install: all
 	# Install Japanese translation
 	install -m 0644 locale/ja/LC_MESSAGES/kew.mo \
 		"$(DESTDIR)$(LOCALEDIR)/ja/LC_MESSAGES/kew.mo"
+
+	# Install Russian translation
+	install -m 0644 locale/ru/LC_MESSAGES/kew.mo \
+		"$(DESTDIR)$(LOCALEDIR)/ru/LC_MESSAGES/kew.mo"
+
+	# Install Spanish translation
+	install -m 0644 locale/es/LC_MESSAGES/kew.mo \
+		"$(DESTDIR)$(LOCALEDIR)/es/LC_MESSAGES/kew.mo"
+
 
 ifeq ($(UNAME_S),Darwin)
 	@true
@@ -482,6 +506,7 @@ uninstall:
 	rm -rf "$(DESTDIR)$(THEMEDIR)"
 	rm -rf "$(DESTDIR)$(LAYOUTDIR)"
 	rm -f "$(DESTDIR)$(LOCALEDIR)/ja/LC_MESSAGES/kew.mo"
+	rm -f "$(DESTDIR)$(LOCALEDIR)/ru/LC_MESSAGES/kew.mo"
 	rm -f "$(DESTDIR)$(LOCALEDIR)/zh_CN/LC_MESSAGES/kew.mo"
 	rm -f "$(DESTDIR)$(PREFIX)/share/icons/hicolor/512x512/apps/kew.png"
 	rm -f "$(DESTDIR)$(PREFIX)/share/applications/kew.desktop"

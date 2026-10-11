@@ -43,6 +43,8 @@
 #include <taglib/wavfile.h>
 #include <taglib/xiphcomment.h>
 
+#include <libmp4.h>
+
 #if defined(__linux__)
 #include <opus/opusfile.h>
 #else
@@ -103,6 +105,17 @@ static std::wstring utf8ToWide(const char *s)
 }
 
 #endif
+
+std::string toLower(const std::string &str)
+{
+        std::string lowerStr = str;
+        std::transform(
+            lowerStr.begin(),
+            lowerStr.end(),
+            lowerStr.begin(),
+            [](unsigned char c) { return std::tolower(c); });
+        return lowerStr;
+}
 
 std::vector<unsigned char> decodeBase64(const std::string &encoded_string)
 {
@@ -1121,6 +1134,26 @@ bool extractCoverArtFromMp4(TagLib::FileRef *f,
         return true;
 }
 
+static double mp4AudioDuration(const char *path)
+{
+        struct mp4_demux *demux = nullptr;
+        if (mp4_demux_open(path, &demux) < 0)
+                return 0.0;
+
+        double duration = 0.0;
+        int trackCount = mp4_demux_get_track_count(demux);
+        for (int i = 0; i < trackCount; i++) {
+                struct mp4_track_info info;
+                if (mp4_demux_get_track_info(demux, i, &info) == 0 &&
+                    info.type == MP4_TRACK_TYPE_AUDIO && info.timescale != 0) {
+                        duration = (double)info.duration / info.timescale;
+                        break;
+                }
+        }
+        mp4_demux_close(demux);
+        return duration;
+}
+
 void trimcpp(std::string &str)
 {
         // Remove leading spaces
@@ -1467,16 +1500,7 @@ static bool loadLyricsFromSYLTTag(TagLib::ID3v2::Tag *id3v2Tag, Lyrics **lyricsO
         return true;
 }
 
-std::string toLower(const std::string &str)
-{
-        std::string lowerStr = str;
-        std::transform(
-            lowerStr.begin(),
-            lowerStr.end(),
-            lowerStr.begin(),
-            [](unsigned char c) { return std::tolower(c); });
-        return lowerStr;
-}
+
 
 static bool loadLyricsFromLyricsTag(TagLib::ID3v2::Tag *id3v2Tag,
                                     Lyrics **lyricsOut)
@@ -1965,6 +1989,13 @@ int extractTags(const char *input_file, TagSettings *tag_settings,
                 return -2;
         }
 
+        /* TagLib currently reports zero duration for fragmented MP4/M4A.
+         * The demuxer has already indexed those samples and can provide the
+         * audio-track duration used by seeking and the progress bar. */
+        if (*duration <= 0.0 &&
+            dynamic_cast<TagLib::MP4::File *>(f.file()) != nullptr)
+                *duration = mp4AudioDuration(input_file);
+
         // Extract replay gain information
         if (auto mp3File = dynamic_cast<TagLib::MPEG::File *>(f.file())) {
 
@@ -2078,7 +2109,7 @@ int extractTags(const char *input_file, TagSettings *tag_settings,
         } else if (extension == "flac") {
                 coverArtExtracted =
                     extractCoverArtFromFlac(&f, coverFilePathStr);
-        } else if (extension == "m4a" || extension == "aac") {
+        } else if (extension == "m4a" || extension == "mp4" || extension == "aac") {
                 coverArtExtracted =
                     extractCoverArtFromMp4(&f, coverFilePathStr);
         }

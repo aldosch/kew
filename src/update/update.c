@@ -211,9 +211,15 @@ void scroll_next(Model *model)
                         if (model->state.settings.collapseTopLevel) {
 
                                 if (!(model->state.ui.current_lib_entry && model->state.ui.current_lib_entry->children &&
+                                        model->state.ui.treeCtx.chosen_dir &&
                                       model->state.ui.current_lib_entry->parent->id == model->state.ui.treeCtx.chosen_dir->id) ||
-                                    (model->state.ui.current_lib_entry->parent->parent && model->state.ui.current_lib_entry->parent->parent->id == model->state.ui.treeCtx.chosen_dir->id) ||
-                                    (model->state.ui.current_lib_entry->parent->id == model->state.ui.treeCtx.chosen_dir->id && !model->state.ui.current_lib_entry->next))
+                                    (model->state.ui.current_lib_entry && model->state.ui.current_lib_entry->parent &&
+                                        model->state.ui.current_lib_entry->parent->parent &&
+                                        model->state.ui.treeCtx.chosen_dir &&
+                                        model->state.ui.current_lib_entry->parent->parent->id == model->state.ui.treeCtx.chosen_dir->id) ||
+                                    (model->state.ui.current_lib_entry && model->state.ui.current_lib_entry->parent &&
+                                        model->state.ui.treeCtx.chosen_dir &&
+                                        model->state.ui.current_lib_entry->parent->id == model->state.ui.treeCtx.chosen_dir->id && !model->state.ui.current_lib_entry->next))
                                         library_collapse_view(model, 1);
                         } else {
                                 library_collapse_view(model, 1);
@@ -230,7 +236,13 @@ void scroll_next(Model *model)
                         component_search_helper_collapse_view(model, 1);
 
                 set_dirty(DIRTY_SEARCH);
-        } else if (model->state.currentView == TRACK_VIEW && (model->state.ui.showLyricsPage)) {
+        } else if (model->state.currentView == HELP_VIEW) {
+
+                model->state.ui.chosen_help_row++;
+
+                set_dirty(DIRTY_HELP);
+        }
+        else if (model->state.currentView == TRACK_VIEW && (model->state.ui.showLyricsPage)) {
                 model->state.ui.chosen_lyrics_row++;
         }
 }
@@ -263,10 +275,16 @@ void scroll_prev(Model *model)
 
                 if (model->state.ui.current_lib_entry && (model->state.ui.current_search_entry && model->state.ui.current_search_entry->parent &&
                                                           (model->state.ui.current_search_entry == model->state.ui.current_search_entry->parent->children ||
-                                                           (model->state.ui.chosen_search_dir && model->state.ui.current_search_entry->id == model->state.ui.chosen_search_dir->id))))
+                                                           (model->state.ui.current_search_entry && model->state.ui.chosen_search_dir &&
+                                                                model->state.ui.current_search_entry->id == model->state.ui.chosen_search_dir->id))))
                         component_search_helper_collapse_view(model, -1);
 
                 set_dirty(DIRTY_SEARCH);
+        } else if (model->state.currentView == HELP_VIEW) {
+
+                model->state.ui.chosen_help_row--;
+
+                set_dirty(DIRTY_HELP);
         } else if (model->state.currentView == TRACK_VIEW && (model->state.ui.showLyricsPage)) {
                 model->state.ui.chosen_lyrics_row--;
         }
@@ -860,7 +878,7 @@ UpdateResult update(Model *model, struct Msg *msg)
                         model->state.ui.chosen_lib_row = msg->chosen_row;
                 }
 
-                if (msg->chosen_name_len > 0 && (model->name_scroll.frame > msg->chosen_name_len || msg->chosen_name_len < model->state.ui.library_region.width))
+                if (msg->chosen_name_len > 0 && (model->name_scroll.frame > msg->chosen_name_len || msg->chosen_name_len + msg->chosen_name_col < model->state.ui.library_region.width))
                         model->name_scroll.active = false;
 
                 if (msg->clicked_song) {
@@ -868,8 +886,12 @@ UpdateResult update(Model *model, struct Msg *msg)
                                 dispatch_msg((struct Msg){.type = MSG_ENQUEUE});
                         else if (model->mouse_key == TB_KEY_MOUSE_MIDDLE)
                                 dispatch_msg((struct Msg){.type = MSG_ENQUEUEANDPLAY});
-                } else {
-                        if (model->state.ui.check_collapse_top_level) {
+                }
+
+                if (!msg->clicked_song || (msg->current_lib_entry && msg->current_lib_entry->is_directory))
+                {
+                        if (model->state.ui.check_collapse_top_level ||
+                                (msg->current_lib_entry && msg->current_lib_entry->is_directory && model->state.ui.chosen_dir)) {
 
                                 FileSystemEntry *first_parent = get_first_parent(model->state.ui.treeCtx.chosen_dir);
                                 FileSystemEntry *entry_first_parent = get_first_parent(msg->current_lib_entry);
@@ -883,7 +905,7 @@ UpdateResult update(Model *model, struct Msg *msg)
                                         else
                                                 library_collapse_view(model, 1);
                                 }
-                                model->state.ui.check_collapse_top_level = false;
+                                 model->state.ui.check_collapse_top_level = false;
                         }
                 }
 

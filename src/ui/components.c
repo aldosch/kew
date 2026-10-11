@@ -207,7 +207,7 @@ bool library_entry_has_visible_children(Model *model, FileSystemEntry *entry)
         return false;
 }
 
-bool library_nothing_more_to_scroll_to(Model *model, FileSystemEntry *current)
+bool library_no_more_entries_in_folder_to_scroll_to(Model *model, FileSystemEntry *current)
 {
         FileSystemEntry *chosen_dir = model->state.ui.treeCtx.chosen_dir;
 
@@ -245,7 +245,7 @@ void library_collapse_directory(Model *model, int direction)
         int num_first_children = 0;
         bool collapse_top = false;
 
-        if (library_nothing_more_to_scroll_to(model, current) && model->state.settings.collapseTopLevel) {
+        if (library_no_more_entries_in_folder_to_scroll_to(model, current) && model->state.settings.collapseTopLevel && first_parent) {
 
                 FileSystemEntry *child = first_parent->children;
 
@@ -264,7 +264,7 @@ void library_collapse_directory(Model *model, int direction)
             chosen_dir) {
                 int num_dirs = count_directories_in_directory(first_parent);
                 int num_children = 0;
-                if (chosen_dir && chosen_dir->id != first_parent->id) {
+                if (chosen_dir && first_parent && chosen_dir->id != first_parent->id) {
                         FileSystemEntry *child = chosen_dir->children;
 
                         while (child != NULL) {
@@ -281,7 +281,7 @@ void library_collapse_directory(Model *model, int direction)
                                 model->state.ui.chosen_lib_row -= num_dirs;
                 }
 
-                if (chosen_dir->id == first_parent->id && !chosen_dir->next)
+                if (chosen_dir && first_parent && chosen_dir->id == first_parent->id && !chosen_dir->next)
                         model->state.ui.chosen_lib_row -= 1; // Last row in the library should go up not down
 
                 model->state.ui.chosen_dir = chosen_dir = NULL;
@@ -310,7 +310,7 @@ bool library_chosen_dir_should_collapse(Model *model, int diff_rows)
 
         // Collapse if there's nothing more to scroll to
         if (((collapseTopLevelSet && chosenIsTopLevel) || !chosenIsTopLevel) && !movingUp)
-                if (library_nothing_more_to_scroll_to(model, current))
+                if (library_no_more_entries_in_folder_to_scroll_to(model, current))
                         return true;
 
         return false;
@@ -399,7 +399,7 @@ void component_library_helper_reset(Model *model)
 
 static FileSystemEntry *component_library_helper_render_node(const Model *model, FileSystemEntry *entry, int depth,
                                                              int max_list_size, int max_name_width,
-                                                             k_Rect region, DrawBuffer *buf, int *row_count, int *iter, int *chosen_row, int *chosen_name_len, bool *clicked_song, FileSystemEntry **first, FileSystemEntry **last)
+                                                             k_Rect region, DrawBuffer *buf, int *row_count, int *iter, int *chosen_row, int *chosen_name_len, int *chosen_name_col, bool *clicked_song, FileSystemEntry **first, FileSystemEntry **last)
 {
         if (entry == NULL)
                 return NULL;
@@ -535,8 +535,9 @@ static FileSystemEntry *component_library_helper_render_node(const Model *model,
                         if (name_width < 0)
                                 name_width = 0;
 
-                        char dir_name[256];
-                        char orig_name[256];
+                        int name_buf_size = 256;
+                        char dir_name[name_buf_size];
+                        char orig_name[name_buf_size];
                         dir_name[0] = '\0';
                         char filename[name_width * 4 + 1];
                         filename[0] = '\0';
@@ -550,18 +551,19 @@ static FileSystemEntry *component_library_helper_render_node(const Model *model,
                                 strip_suffix = false;
                         }
 
+                        int name_len = 0;
                         if (entry->is_directory) {
 
-                                snprintf(orig_name, sizeof(orig_name), "%s", entry->name);
+                                snprintf(orig_name, name_buf_size, "%s", entry->name);
 
                                 if (strcmp(orig_name, "root") == 0) {
-                                        snprintf(orig_name, sizeof(orig_name), "%s", _("─ MUSIC LIBRARY ─"));
+                                        snprintf(orig_name, name_buf_size, "%s", _("─ MUSIC LIBRARY ─"));
                                         item_style = cell_style_from_theme(ui->theme.header);
                                 }
 
-                                *chosen_name_len = (int)g_utf8_strlen(orig_name, KEW_PATH_MAX);
+                                name_len = (int)g_utf8_strlen(orig_name, KEW_PATH_MAX);
                         } else {
-                                *chosen_name_len = (int)process_name(entry->name, filename, name_width, strip_unneeded_chars, strip_suffix);
+                                name_len = (int)process_name(entry->name, filename, name_width, strip_unneeded_chars, strip_suffix);
                         }
 
                         bool is_chosen = false;
@@ -571,7 +573,7 @@ static FileSystemEntry *component_library_helper_render_node(const Model *model,
                                 bool clicked_row = (model->mouse_y >= region.row &&
                                                     model->mouse_y <= region.row + region.height) &&
                                                    (model->mouse_x > region.col + (entry->is_enqueued ? 0 : prefix_len) + extra_indent &&
-                                                    model->mouse_x <= region.col + extra_indent + prefix_len + *chosen_name_len + 3) && // 3 = "└─ "
+                                                    model->mouse_x <= region.col + extra_indent + prefix_len + name_len + 3) && // 3 = "└─ "
                                                    *row_count == model->mouse_y - 1 - region.row;
 
                                 if (clicked_row) {
@@ -604,15 +606,16 @@ static FileSystemEntry *component_library_helper_render_node(const Model *model,
 
                                 if (depth == 1) {
                                         char *upper = string_to_upper(orig_name);
-                                        snprintf(orig_name, sizeof(orig_name), "%s", upper);
-                                        free(upper);
+                                        snprintf(orig_name, name_buf_size, "%s", upper);
+                                        g_free(upper);
                                 }
 
-                                snprintf(dir_name, sizeof(dir_name), "%s", orig_name);
+                                snprintf(dir_name, name_buf_size, "%s", orig_name);
 
-                                if (found_chosen != NULL)
-                                        process_name_scroll(model, orig_name, dir_name, name_width, false, false);
-                                else
+                                if (found_chosen != NULL) {
+                                        *chosen_name_len = (int)process_name_scroll(model, orig_name, dir_name, name_width, false, false);
+                                        *chosen_name_col = text_col;
+                                } else
                                         process_name(orig_name, dir_name, name_width, false, false);
 
                                 draw_buffer_set_string_truncated(buf, draw_row, text_col, dir_name, name_width, item_style);
@@ -637,8 +640,11 @@ static FileSystemEntry *component_library_helper_render_node(const Model *model,
                                         name_width -= 2;
                                 }
 
-                                if (found_chosen != NULL)
-                                        process_name_scroll(model, entry->name, filename, name_width, strip_unneeded_chars, strip_suffix);
+                                if (found_chosen != NULL) {
+                                        *chosen_name_len = (int)process_name_scroll(model, entry->name, filename, name_width, strip_unneeded_chars, strip_suffix);
+                                        *chosen_name_col = text_col;
+                                } else
+                                        process_name(entry->name, filename, name_width, strip_unneeded_chars, strip_suffix);
 
                                 draw_buffer_set_string_truncated(buf, draw_row, text_col, filename, name_width, file_style);
                         }
@@ -649,21 +655,22 @@ static FileSystemEntry *component_library_helper_render_node(const Model *model,
                 (*iter)++;
         }
 
-traverse_children: { // Call render_tree_node recursively
-        FileSystemEntry *child = entry->children;
-        while (child != NULL) {
+traverse_children:
+        { // Call render_tree_node recursively
+                FileSystemEntry *child = entry->children;
+                while (child != NULL) {
 
-                FileSystemEntry *result;
+                        FileSystemEntry *result;
 
-                result = component_library_helper_render_node(model, child, depth + 1, max_list_size,
-                                                              max_name_width, region, buf, row_count, iter, chosen_row, chosen_name_len, clicked_song, first, last);
+                        result = component_library_helper_render_node(model, child, depth + 1, max_list_size,
+                                                                      max_name_width, region, buf, row_count, iter, chosen_row, chosen_name_len, chosen_name_col, clicked_song, first, last);
 
-                if (result && !found_chosen)
-                        found_chosen = result;
+                        if (result && !found_chosen)
+                                found_chosen = result;
 
-                child = child->next;
+                        child = child->next;
+                }
         }
-}
         return found_chosen;
 }
 
@@ -1058,80 +1065,83 @@ ComponentMsg component_side_cover(const Model *model, k_Rect region, DrawBuffer 
         }
 
         ComponentMsg result = (ComponentMsg){0};
-        CellStyle style = cell_style_from_theme(ui->theme.logo);
-        MinicontrolMode mode;
-        int width;
 
-        if (corrected_width >= 16) {
-                mode = MINICONTROLS_FULL;
-                width = 16;
-        } else if (corrected_width >= 13) {
-                mode = MINICONTROLS_NAV_VOL;
-                width = 13;
-        } else if (corrected_width >= 7) {
-                mode = MINICONTROLS_NAV;
-                width = 7;
-        } else {
-                mode = MINICONTROLS_NAV;
-                width = 0;
-        }
+        if (model->state.settings.mouseEnabled) {
+                CellStyle style = cell_style_from_theme(ui->theme.logo);
+                MinicontrolMode mode;
+                int width;
 
-        char controls[100];
-        if (width > 0)
-                get_minicontrols_text(controls, sizeof controls, mode);
-        else
-                controls[0] = '\0';
-
-        int minicontrols_row = model->miniControls.row - 1;
-        int minicontrols_col = model->miniControls.col - 1;
-
-        if (dirty & DIRTY_SONG) {
-                minicontrols_row = row + corrected_height;
-                if (corrected_width > width)
-                        minicontrols_col = col + ((corrected_width - width) / 2);
-                else
-                        minicontrols_col = col;
-        }
-
-        draw_buffer_set_string_truncated(buf,
-                                         minicontrols_row,
-                                         minicontrols_col,
-                                         controls,
-                                         width,
-                                         style);
-
-        k_Rect progress_rect = {
-            .row = row + corrected_height - 1,
-            .col = col,
-            .width = corrected_width,
-            .height = 1,
-        };
-
-        if (dirty & DIRTY_PROGRESS && model->progressBar.row >= 0 && model->progressBar.col >= 0 && model->progressBar.length >= 0) {
-                progress_rect.row = model->progressBar.row - 1;
-                progress_rect.col = model->progressBar.col - 1;
-                progress_rect.width = model->progressBar.length;
-                progress_rect.height = 1;
-        };
-
-        if (dirty & (DIRTY_SONG | DIRTY_PROGRESS))
-                result = component_progress_bar(model, progress_rect, buf, dirty);
-
-        if (dirty & DIRTY_SONG) {
-
-                if (result.has_msg) {
-                        result.msg.type = MSG_MINICONTROLS_SET;
-                        result.msg.minicontrols_row = minicontrols_row + 1;
-                        result.msg.minicontrols_col = minicontrols_col + 1;
-                        result.msg.minicontrols_width = width;
+                if (corrected_width >= 16) {
+                        mode = MINICONTROLS_FULL;
+                        width = 16;
+                } else if (corrected_width >= 13) {
+                        mode = MINICONTROLS_NAV_VOL;
+                        width = 13;
+                } else if (corrected_width >= 7) {
+                        mode = MINICONTROLS_NAV;
+                        width = 7;
                 } else {
-                        result.has_msg = true;
-                        result.msg = (struct Msg){
-                            .type = MSG_MINICONTROLS_SET,
-                            .minicontrols_row = minicontrols_row + 1,
-                            .minicontrols_col = minicontrols_col + 1,
-                            .minicontrols_width = width,
-                        };
+                        mode = MINICONTROLS_NAV;
+                        width = 0;
+                }
+
+                char controls[100];
+                if (width > 0)
+                        get_minicontrols_text(controls, sizeof controls, mode);
+                else
+                        controls[0] = '\0';
+
+                int minicontrols_row = model->miniControls.row - 1;
+                int minicontrols_col = model->miniControls.col - 1;
+
+                if (dirty & DIRTY_SONG) {
+                        minicontrols_row = row + corrected_height;
+                        if (corrected_width > width)
+                                minicontrols_col = col + ((corrected_width - width) / 2);
+                        else
+                                minicontrols_col = col;
+                }
+
+                draw_buffer_set_string_truncated(buf,
+                                                 minicontrols_row,
+                                                 minicontrols_col,
+                                                 controls,
+                                                 width,
+                                                 style);
+
+                k_Rect progress_rect = {
+                    .row = row + corrected_height - 1,
+                    .col = col,
+                    .width = corrected_width,
+                    .height = 1,
+                };
+
+                if (dirty & DIRTY_PROGRESS && model->progressBar.row >= 0 && model->progressBar.col >= 0 && model->progressBar.length >= 0) {
+                        progress_rect.row = model->progressBar.row - 1;
+                        progress_rect.col = model->progressBar.col - 1;
+                        progress_rect.width = model->progressBar.length;
+                        progress_rect.height = 1;
+                };
+
+                if (dirty & (DIRTY_SONG | DIRTY_PROGRESS))
+                        result = component_progress_bar(model, progress_rect, buf, dirty);
+
+                if (dirty & DIRTY_SONG) {
+
+                        if (result.has_msg) {
+                                result.msg.type = MSG_MINICONTROLS_SET;
+                                result.msg.minicontrols_row = minicontrols_row + 1;
+                                result.msg.minicontrols_col = minicontrols_col + 1;
+                                result.msg.minicontrols_width = width;
+                        } else {
+                                result.has_msg = true;
+                                result.msg = (struct Msg){
+                                    .type = MSG_MINICONTROLS_SET,
+                                    .minicontrols_row = minicontrols_row + 1,
+                                    .minicontrols_col = minicontrols_col + 1,
+                                    .minicontrols_width = width,
+                                };
+                        }
                 }
         }
 
@@ -1248,27 +1258,26 @@ ComponentMsg component_landscape_cover(const Model *model, k_Rect region,
                 cell_height = term_size->height_pixels / term_size->rows;
         }
 
-
         // Calculate the cover's aspect ratio in terminal cells.
         float image_aspect =
-                (float)songdata->coverWidth /
-                (float)songdata->coverHeight;
+            (float)songdata->coverWidth /
+            (float)songdata->coverHeight;
 
         // Width in terminal columns for a given number of rows.
         float terminal_aspect =
-                image_aspect * (float)cell_height /
-                (float)cell_width;
+            image_aspect * (float)cell_height /
+            (float)cell_width;
 
         int target_height = available_height;
         int corrected_width =
-                (int)(target_height * terminal_aspect);
+            (int)(target_height * terminal_aspect);
 
         // Fit the cover inside the available region.
         if (corrected_width > available_width) {
                 corrected_width = available_width;
 
                 target_height =
-                        (int)(corrected_width / terminal_aspect);
+                    (int)(corrected_width / terminal_aspect);
         }
 
         if (target_height <= MIN_COVER_SIZE ||
@@ -1308,14 +1317,14 @@ ComponentMsg component_landscape_cover(const Model *model, k_Rect region,
         }
 
         bool draw_cover_marker =
-                model->state.settings.coverAnsi ||
-                model->state.ui.chroma_started ||
-                model->state.ui.chroma_start_requested;
+            model->state.settings.coverAnsi ||
+            model->state.ui.chroma_started ||
+            model->state.ui.chroma_start_requested;
 
         bool draw_occupied_markers =
-                !model->state.settings.coverAnsi ||
-                model->state.ui.chroma_started ||
-                model->state.ui.chroma_start_requested;
+            !model->state.settings.coverAnsi ||
+            model->state.ui.chroma_started ||
+            model->state.ui.chroma_start_requested;
 
         draw_square_bitmap_to_buf(buf,
                                   row,
@@ -1334,7 +1343,6 @@ ComponentMsg component_landscape_cover(const Model *model, k_Rect region,
 
         return (ComponentMsg){0};
 }
-
 
 ComponentMsg component_now_playing(const Model *model, k_Rect region, DrawBuffer *buf, DirtyFlags dirty)
 {
@@ -1686,6 +1694,7 @@ ComponentMsg component_playlist_rows(const Model *model, k_Rect region, DrawBuff
 {
         (void)dirty;
 
+        static bool skip_mouse_click = false;
         const UISettings *ui = &model->state.settings;
         const PlayList *list = model->playlist;
         const UIState *uis = &model->state.ui;
@@ -1804,7 +1813,7 @@ ComponentMsg component_playlist_rows(const Model *model, k_Rect region, DrawBuff
 
                 int is_chosen = false;
                 if (!found_chosen) {
-                        if (model->mouse_x >= 0 && model->mouse_y >= 0) {
+                        if (!skip_mouse_click && model->mouse_x >= 0 && model->mouse_y >= 0) {
                                 is_chosen = model->mouse_y >= region.row &&
                                             model->mouse_x > region.col &&
                                             model->mouse_x <= region.col + rownum_len + spaces + chosen_name_len &&
@@ -1822,9 +1831,6 @@ ComponentMsg component_playlist_rows(const Model *model, k_Rect region, DrawBuff
                         }
                 }
 
-                if (node->next == NULL && !found_chosen)
-                        is_chosen = found_chosen = true; // Chose the last one if none has been found
-
                 bool is_playing = false;
 
                 Node *current = get_current_song();
@@ -1836,6 +1842,16 @@ ComponentMsg component_playlist_rows(const Model *model, k_Rect region, DrawBuff
                         chosen_row = i;
                         chosen_node = node;
                         found_chosen = true;
+                        skip_mouse_click = false;
+                }
+
+                if (node->next == NULL && !found_chosen) {
+                        if (!skip_mouse_click && model->mouse_x >= 0 && model->mouse_y >= 0) {
+                                // mouse clicked outside any song in the playlist
+                                skip_mouse_click = true;
+                                return component_playlist_rows(model, region, buf, dirty);
+                        }
+                        skip_mouse_click = false;
                 }
 
                 if (is_playing) {
@@ -2071,7 +2087,7 @@ ComponentMsg component_metadata(const Model *model, k_Rect region, DrawBuffer *b
                         }
 
                         if (artist) {
-                                if (model->state.settings.useAristsLink && strnlen(metadata->url, 3) > 0) {
+                                if (model->state.settings.useArtistsLink && strnlen(metadata->url, 3) > 0) {
                                         draw_link_to_buffer(buf, region.row + 1, region.col, utf8_display_width(line),
                                                             metadata->url, artist, style);
                                 } else {
@@ -2746,7 +2762,7 @@ ComponentMsg component_track_landscape_normal(const Model *model, k_Rect region,
                     .width = visualizer_width,
                     .height = 1,
                 };
-                if (dirty & DIRTY_VISUALIZER)
+                if (dirty & DIRTY_FOOTER)
                         component_error_row(model, error_rect, buf, dirty);
         }
 
@@ -2952,10 +2968,48 @@ ComponentMsg component_track_landscape(const Model *model, k_Rect region, DrawBu
 
         ComponentMsg result = (ComponentMsg){0};
 
+        int info_box_col = 0;
+
+        if (model->songdata && model->songdata->cover && state->settings.coverEnabled) {
+
+                float aspect = get_aspect_ratio();
+
+                if (aspect == 0.0f)
+                        aspect = 1.0f;
+
+                info_box_col = region.height * aspect;
+        }
+
+        if (model->songdata && model->songdata->cover && state->settings.coverEnabled && (dirty & DIRTY_SONG)) {
+
+                float aspect = get_aspect_ratio();
+
+                if (aspect == 0.0f)
+                        aspect = 1.0f;
+
+                // Full lyrics page
+                k_Rect cover_rect = {
+                    .row = region.row,
+                    .col = region.col,
+                    .width = info_box_col,
+                    .height = region.height,
+                };
+
+                component_landscape_cover(model, cover_rect, buf, dirty);
+        }
+
+        // Full lyrics page
+        k_Rect info_rect = {
+            .row = region.row,
+            .col = info_box_col,
+            .width = region.width - info_box_col,
+            .height = region.height,
+        };
+
         if (state->ui.showLyricsPage)
-                result = component_track_landscape_lyrics(model, region, buf, dirty);
+                result = component_track_landscape_lyrics(model, info_rect, buf, dirty);
         else
-                result = component_track_landscape_normal(model, region, buf, dirty);
+                result = component_track_landscape_normal(model, info_rect, buf, dirty);
 
         return result;
 }
@@ -3048,8 +3102,7 @@ ComponentMsg component_track_portrait_normal(const Model *model, k_Rect region, 
                         component_time_simple_and_vol(model, time_rect, buf, dirty);
                 else
                         component_time(model, time_rect, buf, dirty);
-        }
-        else {
+        } else {
                 timeStatus_height = 0;
         }
 
@@ -3334,8 +3387,6 @@ ComponentMsg component_help(const Model *model, k_Rect region, DrawBuffer *buf,
         HELP_LINE(_(" · Add Song To 'kew favorites.m3u': %s (run with 'kew .')"),
                   get_binding_string(MSG_ADDTOFAVORITESPLAYLIST, false));
 
-
-
         row += 1;
         output_row += 1;
 
@@ -3385,17 +3436,18 @@ ComponentMsg component_help(const Model *model, k_Rect region, DrawBuffer *buf,
                                                  max_width, text_style);
         }
 
-render_scrollbar: {
-        // Blank remaining rows
-        CellStyle plain_style = cell_style_plain();
-        while (output_row < region.row + region.height) {
-                draw_buffer_set_string_truncated(buf, output_row++, region.col,
-                                                 "", region.width, plain_style);
-                output_row++;
-        }
+render_scrollbar:
+        {
+                // Blank remaining rows
+                CellStyle plain_style = cell_style_plain();
+                while (output_row < region.row + region.height) {
+                        draw_buffer_set_string_truncated(buf, output_row, region.col,
+                                                         "", region.width, plain_style);
+                        output_row++;
+                }
 
-        render_scroll_bar(buf, region, model->state.ui.help_scrollbar, plain_style);
-}
+                render_scroll_bar(buf, region, model->state.ui.help_scrollbar, plain_style);
+        }
         return (ComponentMsg){0};
 }
 
@@ -3417,10 +3469,11 @@ ComponentMsg component_library_rows(const Model *model, k_Rect region, DrawBuffe
         bool clicked_chosen = false;
         int chosen_row = model->state.ui.chosen_lib_row;
         int chosen_name_len = 0;
+        int chosen_name_col = 0;
         FileSystemEntry *first = NULL;
         FileSystemEntry *last = NULL;
 
-        FileSystemEntry *chosen_lib_entry = component_library_helper_render_node(model, model->library, 0, region.height, max_name_width, region, buf, &row_count, &iter, &chosen_row, &chosen_name_len, &clicked_chosen, &first, &last);
+        FileSystemEntry *chosen_lib_entry = component_library_helper_render_node(model, model->library, 0, region.height, max_name_width, region, buf, &row_count, &iter, &chosen_row, &chosen_name_len, &chosen_name_col, &clicked_chosen, &first, &last);
 
         // Clear remaining rows
         CellStyle empty = cell_style_plain();
@@ -3441,6 +3494,7 @@ ComponentMsg component_library_rows(const Model *model, k_Rect region, DrawBuffe
             .chosen_row = chosen_row,
             .clicked_song = clicked_chosen,
             .chosen_name_len = chosen_name_len,
+            .chosen_name_col = chosen_name_col,
             .num_rows = iter,
             .found_chosen = (chosen_lib_entry != NULL)};
 
@@ -3644,7 +3698,7 @@ ComponentMsg component_search_results(const Model *model, k_Rect region, DrawBuf
                                     entry->name);
 
                                 snprintf(tmp, sizeof(tmp), "%s", upper);
-                                free(upper);
+                                g_free(upper);
 
                         } else {
                                 snprintf(tmp, sizeof(tmp), "[%s]",

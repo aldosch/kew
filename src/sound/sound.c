@@ -90,8 +90,10 @@ static bool should_switch(ma_uint64 frames_to_read,
         return at_end;
 }
 
-static bool execute_seek(sound_system_t *sound, ma_decoder *decoder, ma_uint64 targetFrame, const CodecOps *ops)
+static bool execute_seek(sound_system_t *sound, ma_data_source *decoder,
+                         ma_uint64 targetFrame, const CodecOps *ops)
 {
+        bool was_paused = pb_is_paused();
         stop_playback();
 
         ma_result result = ops->seek_to_pcm_frame(decoder, targetFrame, 0);
@@ -106,12 +108,14 @@ static bool execute_seek(sound_system_t *sound, ma_decoder *decoder, ma_uint64 t
                 sound->total_frames = played;
         }
 
-        sound_system_play(sound);
+        if (!was_paused)
+                sound_system_play(sound);
 
         return (result == MA_SUCCESS);
 }
 
-static bool perform_seek_if_requested(sound_system_t *sound, ma_decoder *decoder)
+static bool perform_seek_if_requested(sound_system_t *sound,
+                                      ma_data_source *decoder)
 {
         if (!is_seek_requested())
                 return false;
@@ -120,11 +124,19 @@ static bool perform_seek_if_requested(sound_system_t *sound, ma_decoder *decoder
 
         ma_uint64 totalFrames = 0;
 
-        ma_data_source_get_length_in_pcm_frames(decoder, &totalFrames);
+        ma_result length_result =
+            ma_data_source_get_length_in_pcm_frames(decoder, &totalFrames);
+        if (length_result != MA_SUCCESS || totalFrames == 0)
+                return false;
 
         double seek_percent = get_seek_percentage();
+        if (seek_percent < 0.0)
+                seek_percent = 0.0;
         if (seek_percent > 100.0)
                 seek_percent = 100.0;
+
+        if (isnan(seek_percent))
+                seek_percent = 0.0;
 
         ma_uint64 targetFrame =
             (ma_uint64)((totalFrames - 1) * seek_percent / 100.0);
@@ -132,6 +144,8 @@ static bool perform_seek_if_requested(sound_system_t *sound, ma_decoder *decoder
                 targetFrame = totalFrames - 1;
 
         const CodecOps *ops = get_codec_ops(get_current_decoder_decoder_type());
+        if (ops == NULL || ops->seek_to_pcm_frame == NULL)
+                return false;
 
         return execute_seek(sound, decoder, targetFrame, ops);
 }
@@ -312,18 +326,18 @@ void switch_current_decoder(sound_system_t *sound)
 static gint64 rtkit_rttime_usec_max(GDBusConnection *bus)
 {
         GVariant *reply = g_dbus_connection_call_sync(
-                bus,
-                "org.freedesktop.RealtimeKit1",
-                "/org/freedesktop/RealtimeKit1",
-                "org.freedesktop.DBus.Properties",
-                "Get",
-                g_variant_new("(ss)", "org.freedesktop.RealtimeKit1",
-                              "RTTimeUSecMax"),
-                NULL,
-                G_DBUS_CALL_FLAGS_NONE,
-                RTKIT_CALL_TIMEOUT_MS,
-                NULL,
-                NULL);
+            bus,
+            "org.freedesktop.RealtimeKit1",
+            "/org/freedesktop/RealtimeKit1",
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            g_variant_new("(ss)", "org.freedesktop.RealtimeKit1",
+                          "RTTimeUSecMax"),
+            NULL,
+            G_DBUS_CALL_FLAGS_NONE,
+            RTKIT_CALL_TIMEOUT_MS,
+            NULL,
+            NULL);
 
         if (reply == NULL)
                 return RTKIT_RTTIME_USEC_DEFAULT;
@@ -380,7 +394,7 @@ static bool set_decode_thread_priority_rtkit(void)
 
         GError *error = NULL;
         GDBusConnection *bus =
-                g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
+            g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
 
         if (bus == NULL) {
                 k_log("RTKit: failed to connect to system bus: %s",
@@ -393,17 +407,17 @@ static bool set_decode_thread_priority_rtkit(void)
 
         /* First try realtime scheduling. */
         GVariant *result = g_dbus_connection_call_sync(
-                bus,
-                "org.freedesktop.RealtimeKit1",
-                "/org/freedesktop/RealtimeKit1",
-                "org.freedesktop.RealtimeKit1",
-                "MakeThreadRealtime",
-                g_variant_new("(tu)", (guint64)tid, (guint32)1),
-                NULL,
-                G_DBUS_CALL_FLAGS_NONE,
-                RTKIT_CALL_TIMEOUT_MS,
-                NULL,
-                &error);
+            bus,
+            "org.freedesktop.RealtimeKit1",
+            "/org/freedesktop/RealtimeKit1",
+            "org.freedesktop.RealtimeKit1",
+            "MakeThreadRealtime",
+            g_variant_new("(tu)", (guint64)tid, (guint32)1),
+            NULL,
+            G_DBUS_CALL_FLAGS_NONE,
+            RTKIT_CALL_TIMEOUT_MS,
+            NULL,
+            &error);
 
         if (result != NULL) {
                 g_variant_unref(result);
@@ -421,17 +435,17 @@ static bool set_decode_thread_priority_rtkit(void)
         gint32 nice_level = -5;
 
         result = g_dbus_connection_call_sync(
-                bus,
-                "org.freedesktop.RealtimeKit1",
-                "/org/freedesktop/RealtimeKit1",
-                "org.freedesktop.RealtimeKit1",
-                "MakeThreadHighPriority",
-                g_variant_new("(ti)", (guint64)tid, nice_level),
-                NULL,
-                G_DBUS_CALL_FLAGS_NONE,
-                RTKIT_CALL_TIMEOUT_MS,
-                NULL,
-                &error);
+            bus,
+            "org.freedesktop.RealtimeKit1",
+            "/org/freedesktop/RealtimeKit1",
+            "org.freedesktop.RealtimeKit1",
+            "MakeThreadHighPriority",
+            g_variant_new("(ti)", (guint64)tid, nice_level),
+            NULL,
+            G_DBUS_CALL_FLAGS_NONE,
+            RTKIT_CALL_TIMEOUT_MS,
+            NULL,
+            &error);
 
         g_object_unref(bus);
 
@@ -475,17 +489,15 @@ void set_decode_thread_priority(pthread_t thread)
                 if (!set_decode_thread_priority_rtkit()) {
                         setpriority(PRIO_PROCESS, 0, -5);
                         k_log("decode_loop: thread priority, nice -5 used");
-                }
-                else {
+                } else {
                         k_log("decode_loop: thread priority, rtkit used");
-               }
+                }
 #else
                 setpriority(PRIO_PROCESS, 0, -5);
                 k_log("decode_loop: thread priority, nice -5 used");
 #endif
-        }
-        else {
-                        k_log("decode_loop: thread priority, SCHED_RR used directly");
+        } else {
+                k_log("decode_loop: thread priority, SCHED_RR used directly");
         }
 
 #elif defined(__FreeBSD__)
@@ -799,6 +811,13 @@ void *decode_loop(void *arg)
                         if (pb_is_paused()) {
                                 c_sleep(10);
                                 unpaused = true;
+
+                                if (is_seek_requested()) {
+                                        void *paused_decoder = get_current_decoder();
+                                        if (paused_decoder != NULL)
+                                                perform_seek_if_requested(sound, paused_decoder);
+                                        break;
+                                }
                         } else {
                                 break;
                         }
@@ -1008,6 +1027,13 @@ void on_audio_frames(ma_device *device, void *pOutput, const void *input, ma_uin
         (void)device;
         (void)input;
 
+        // Prefill / early callbacks: output silence, don't consume the ring buffer
+        if (ma_device_get_state(device) != ma_device_state_started) {
+                memset(pOutput, 0, frameCount * sound_s->channels * sizeof(float));
+                return;
+        }
+        atomic_store_explicit(&sound_s->streaming_confirmed, true, memory_order_release);
+
         Model *model = get_model();
 
         if (model->state.settings.verbose_mode && atomic_load(&sound_s->first_song_log))
@@ -1121,14 +1147,43 @@ void on_audio_frames(ma_device *device, void *pOutput, const void *input, ma_uin
         }
 
         if (model->state.settings.verbose_mode && atomic_load(&sound_s->first_song_log))
-                        k_log("on_audio_frames() pushing to visualizer");
+                k_log("on_audio_frames() pushing to visualizer");
 
         visualizer_ringbuffer_push(pOutput, frameCount, sound_s->channels);
 
         if (model->state.settings.verbose_mode && atomic_load(&sound_s->first_song_log)) {
-                        k_log("on_audio_frames() pushed to visualizer");
-                        atomic_store(&sound_s->first_song_log, false);
+                k_log("on_audio_frames() pushed to visualizer");
+                atomic_store(&sound_s->first_song_log, false);
         }
+}
+
+static bool wait_for_streaming(int timeout_ms)
+{
+        struct timespec ts = {0, 1000000}; // 1 ms
+        for (int i = 0; i < timeout_ms; i++) {
+                if (atomic_load_explicit(&sound_s->streaming_confirmed, memory_order_acquire))
+                        return true;
+                nanosleep(&ts, NULL);
+        }
+        return false;
+}
+
+static ma_result start_device_verified(ma_device *dev)
+{
+        for (int attempt = 0; attempt < 10; attempt++) {
+                atomic_store(&sound_s->streaming_confirmed, false);
+
+                ma_result res = ma_device_start(dev);
+                if (res != MA_SUCCESS)
+                        return res;
+
+                if (wait_for_streaming(200))
+                        return MA_SUCCESS;
+
+                k_log("Audio stalled after start, retry %d", attempt + 1);
+                ma_device_stop(dev);
+        }
+        return MA_ERROR;
 }
 
 sound_result_t handle_codec(
@@ -1187,7 +1242,12 @@ sound_result_t handle_codec(
 
                 cleanup_playback_device();
 
+                LoaderData *loader = get_loader_data();
+
+                pthread_mutex_lock(&loader->mutex);
                 reset_decoders();
+                pthread_mutex_unlock(&loader->mutex);
+
                 reset_audio_buffer();
 
                 sound->sample_rate = sample_rate;
@@ -1217,6 +1277,13 @@ sound_result_t handle_codec(
                                NULL,
                                decode_loop,
                                sound_s);
+
+                ma_result res = start_device_verified(get_device());
+
+                if (res != MA_SUCCESS) {
+                        k_log("Failed to start miniaudio device.");
+                        return -1;
+                }
         }
 
         return result;
@@ -1481,8 +1548,7 @@ int load_decoder(SongData *song_data, bool *song_data_deleted)
         LoaderData *loader_data = get_loader_data();
         Model *model = get_model();
 
-        if (model->state.settings.verbose_mode)
-        {
+        if (model->state.settings.verbose_mode) {
                 k_log("load_decoder() entered");
         }
 
@@ -1525,8 +1591,7 @@ int assign_loaded_data(void)
         LoaderData *loader_data = get_loader_data();
         Model *model = get_model();
 
-        if (model->state.settings.verbose_mode)
-        {
+        if (model->state.settings.verbose_mode) {
                 k_log("assign_loaded_data() entered");
         }
 
@@ -1602,8 +1667,7 @@ void *songdata_reader_thread(void *arg)
         LoaderData *loader_data = get_loader_data();
 
         Model *model = get_model();
-        if (model->state.settings.verbose_mode)
-        {
+        if (model->state.settings.verbose_mode) {
                 k_log("song_data_reader_thread() entered");
         }
 
@@ -1667,8 +1731,7 @@ void *songdata_reader_thread(void *arg)
         ps->skipping = false;
         ps->songLoading = false;
 
-        if (model->state.settings.verbose_mode)
-        {
+        if (model->state.settings.verbose_mode) {
                 k_log("song_data_reader_thread() done");
         }
 
